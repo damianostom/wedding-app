@@ -4,7 +4,13 @@ import { getMyWeddingId } from '@/lib/getWeddingId'
 import { useEffect, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
-type Msg = { id: number | string; content: string; created_at: string; user_id: string | null; sender_name?: string }
+type Msg = {
+  id: number | string
+  content: string
+  created_at: string
+  user_id: string | null
+  sender_name?: string
+}
 
 export default function ChatPage() {
   const supabase = supaClient()
@@ -12,18 +18,20 @@ export default function ChatPage() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [text, setText] = useState('')
   const [err, setErr] = useState<string | null>(null)
-  const [names, setNames] = useState<Record<string,string>>({})
+  const [names, setNames] = useState<Record<string, string>>({})
   const channelRef = useRef<RealtimeChannel | null>(null)
-
   const seen = useRef(new Set<string>())
 
   useEffect(() => {
     ;(async () => {
       const wid = await getMyWeddingId()
       setWeddingId(wid)
-      if (!wid) { setErr('Brak powiązania z weselem — dodaj rekord w "guests" dla zalogowanego użytkownika.'); return }
+      if (!wid) {
+        setErr('Brak powiązania z weselem — dodaj rekord w "guests" dla zalogowanego użytkownika.')
+        return
+      }
 
-      // 1) Historia
+      // historia
       const { data, error } = await supabase
         .from('messages')
         .select('id,content,created_at,user_id')
@@ -33,21 +41,20 @@ export default function ChatPage() {
       for (const m of data ?? []) seen.current.add(`${m.id}|${m.created_at}`)
       setMsgs(data ?? [])
 
-      // 1a) mapka user_id -> full_name
+      // zbuduj mapkę user_id -> full_name
       const ids = Array.from(new Set((data ?? []).map(m => m.user_id).filter(Boolean))) as string[]
       if (ids.length) {
         const { data: gs } = await supabase
           .from('guests')
           .select('user_id,full_name')
           .in('user_id', ids)
-        const m: Record<string,string> = {}
+        const m: Record<string, string> = {}
         for (const g of gs ?? []) m[g.user_id] = g.full_name
         setNames(m)
       }
 
-      // 2) Kanał realtime (broadcast + postgres_changes gdy jest)
+      // realtime
       const ch = supabase.channel(`chat:${wid}`, { config: { broadcast: { ack: true } } })
-
       ch.on('broadcast', { event: 'new-message' }, payload => {
         const m = payload.payload as Msg
         const key = `${m.id}|${m.created_at}`
@@ -58,7 +65,6 @@ export default function ChatPage() {
           setNames(prev => ({ ...prev, [m.user_id as string]: m.sender_name as string }))
         }
       })
-
       ch.on('postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `wedding_id=eq.${wid}` },
         (payload: any) => {
@@ -69,20 +75,20 @@ export default function ChatPage() {
           setMsgs(prev => [...prev, m])
         }
       )
-
       channelRef.current = ch.subscribe()
       return () => { if (channelRef.current) supabase.removeChannel(channelRef.current) }
     })()
-  }, []) // mount
+  }, [])
 
   async function send() {
     setErr(null)
     if (!text.trim() || !weddingId) return
 
     const { data: { user } } = await supabase.auth.getUser()
-    // moja nazwa do szybkiego podglądu
     let myName = 'Gość'
+    let myId: string | null = null
     if (user?.id) {
+      myId = user.id
       const { data: me } = await supabase
         .from('guests')
         .select('full_name')
@@ -91,16 +97,15 @@ export default function ChatPage() {
       myName = me?.full_name || myName
     }
 
-    // 1) zapisz w DB
+    // ⬇⬇⬇ KLUCZOWA ZMIANA: zapisujemy user_id do tabeli
     const { data, error } = await supabase
       .from('messages')
-      .insert({ wedding_id: weddingId, content: text })
+      .insert({ wedding_id: weddingId, content: text, user_id: myId })
       .select('id,content,created_at,user_id')
       .single()
 
     if (error) { setErr(error.message); return }
 
-    // 2) broadcast z nazwą (nie musi być w DB)
     if (channelRef.current) {
       channelRef.current.send({
         type: 'broadcast',

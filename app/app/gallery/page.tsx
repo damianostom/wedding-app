@@ -1,187 +1,247 @@
 'use client'
-
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
 
-type PhotoRow = {
+type Photo = {
   id: string
   storage_path: string
   created_at: string
-  uploaded_by?: string | null
+  uploaded_by: string | null
 }
-
-type PhotoVM = {
+type Comment = {
   id: string
-  url: string
+  photo_id: string
+  user_id: string | null
+  content: string
   created_at: string
-  who?: string
 }
 
 export default function GalleryPage() {
   const supabase = supaClient()
+
   const [weddingId, setWeddingId] = useState<string | null>(null)
-  const [photos, setPhotos] = useState<PhotoVM[]>([])
-  const [err, setErr] = useState<string | null>(null)
+  const [myId, setMyId] = useState<string | null>(null)
+  const [isOrganizer, setIsOrganizer] = useState(false)
+
+  const [photos, setPhotos] = useState<Photo[]>([])
+  const [publicUrls, setPublicUrls] = useState<Record<string, string>>({})
+  const [nameByUserId, setNameByUserId] = useState<Record<string, string>>({})
+
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
 
-  // Lightbox
-  const [open, setOpen] = useState(false)
-  const [idx, setIdx] = useState(0)
-  const current = photos[idx]
+  // Lightbox / komentarze
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const activePhoto = useMemo(() => photos.find(p => p.id === activeId) || null, [photos, activeId])
+  const [comments, setComments] = useState<Comment[]>([])
+  const [newComment, setNewComment] = useState('')
 
-  // wczytaj zdjęcia
   useEffect(() => {
     ;(async () => {
       const wid = await getMyWeddingId()
       setWeddingId(wid)
 
-      // pobierz rekordy z DB (tylko z mojego wesela)
-      const { data: rows, error } = await supabase
-        .from('photos')
-        .select('id,storage_path,created_at,uploaded_by')
-        .order('created_at', { ascending: false })
+      const { data: { user } } = await supabase.auth.getUser()
+      setMyId(user?.id ?? null)
 
-      if (error) { setErr(error.message); return }
-
-      // mapka user_id -> full_name (opcjonalnie)
-      let nameByUser: Record<string, string> = {}
-      const uploaderIds = Array.from(new Set((rows ?? []).map(r => r.uploaded_by).filter(Boolean))) as string[]
-      if (uploaderIds.length) {
-        const { data: gs } = await supabase.from('guests')
-          .select('user_id,full_name').in('user_id', uploaderIds)
-        for (const g of gs ?? []) nameByUser[g.user_id] = g.full_name
+      if (user?.id) {
+        const { data: me } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
+        setIsOrganizer(me?.role === 'organizer')
       }
 
-      // publiczne URL-e
-      const list: PhotoVM[] = []
-      for (const r of (rows ?? [])) {
-        const pub = supabase.storage.from('photos').getPublicUrl(r.storage_path).data.publicUrl
-        list.push({
-          id: r.id,
-          url: pub,
-          created_at: r.created_at,
-          who: r.uploaded_by ? (nameByUser[r.uploaded_by] || 'Gość') : undefined
-        })
-      }
-      setPhotos(list)
-    })()
+      await refresh(wid)
+    })().catch(e => setErr(String(e)))
   }, [])
 
-  // upload
-  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function refresh(wid: string | null) {
+    if (!wid) return
     setErr(null)
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!weddingId) { setErr('Nie znaleziono Twojego wesela. Upewnij się, że jesteś przypisany w tabeli guests.'); return }
 
+    const { data, error } = await supabase
+      .from('photos')
+      .select('id,storage_path,created_at,uploaded_by')
+      .eq('wedding_id', wid)
+      .order('created_at', { ascending: false })
+
+    if (error) { setErr(error.message); return }
+
+    setPhotos(data ?? [])
+
+    // URL-e
+    const urls: Record<string, string> = {}
+    for (const p of data ?? []) {
+      urls[p.id] = supabase.storage.from('photos').getPublicUrl(p.storage_path).data.publicUrl
+    }
+    setPublicUrls(urls)
+
+    // mapka user_id -> full_name
+    const ids = Array.from(new Set((data ?? []).map(p => p.uploaded_by).filter(Boolean))) as string[]
+    if (ids.length) {
+      const { data: gs } = await supabase
+        .from('guests')
+        .select('user_id,full_name')
+        .in('user_id', ids)
+      const m: Record<string, string> = {}
+      for (const g of gs ?? []) m[g.user_id] = g.full_name
+      setNameByUserId(m)
+    } else {
+      setNameByUserId({})
+    }
+  }
+
+  async function uploadSelected() {
+    setErr(null)
+    if (!selectedFile) return
+    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     setUploading(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const path = `${weddingId}/${crypto.randomUUID()}-${file.name}`
-      const up = await supabase.storage.from('photos').upload(path, file, { upsert: true })
-      if (up.error) throw up.error
-
-      // spróbuj wstawić uploaded_by – jeśli kolumny brak, spróbuj bez
-      const insert = await supabase
+      const path = `${weddingId}/${crypto.randomUUID()}-${selectedFile.name}`
+      const { error: upErr } = await supabase.storage.from('photos').upload(path, selectedFile, { upsert: true })
+      if (upErr) throw upErr
+      const { error: insErr } = await supabase
         .from('photos')
-        .insert({ wedding_id: weddingId, storage_path: path, uploaded_by: user?.id ?? null })
-        .select('id,storage_path,created_at,uploaded_by')
-        .single()
-
-      let row: PhotoRow
-      if (insert.error) {
-        // fallback bez uploaded_by
-        const ins2 = await supabase
-          .from('photos')
-          .insert({ wedding_id: weddingId, storage_path: path })
-          .select('id,storage_path,created_at')
-          .single()
-        if (ins2.error) throw ins2.error
-        row = ins2.data as PhotoRow
-      } else {
-        row = insert.data as PhotoRow
-      }
-
-      const url = supabase.storage.from('photos').getPublicUrl(path).data.publicUrl
-      setPhotos(prev => [{ id: row.id, url, created_at: row.created_at, who: undefined }, ...prev])
+        .insert({ wedding_id: weddingId, storage_path: path, uploaded_by: myId })
+      if (insErr) throw insErr
+      setSelectedFile(null)
+      await refresh(weddingId)
     } catch (e: any) {
       setErr(e?.message || 'Błąd wgrywania')
     } finally {
       setUploading(false)
-      e.currentTarget.value = ''
     }
   }
 
-  // lightbox – obsługa klawiatury
-  useEffect(() => {
-    function onKey(ev: KeyboardEvent) {
-      if (!open) return
-      if (ev.key === 'Escape') setOpen(false)
-      if (ev.key === 'ArrowRight') setIdx(i => (i + 1) % photos.length)
-      if (ev.key === 'ArrowLeft') setIdx(i => (i - 1 + photos.length) % photos.length)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, photos.length])
+  async function deletePhoto(p: Photo) {
+    if (!confirm('Usunąć zdjęcie?')) return
+    setErr(null)
+    // Uprawnienia egzekwują polityki – w UI pokażemy przycisk tylko uprawnionym
+    const { error: d1 } = await supabase.from('photos').delete().eq('id', p.id)
+    if (d1) { setErr(d1.message); return }
+    await supabase.storage.from('photos').remove([p.storage_path]).catch(() => {})
+    await refresh(weddingId)
+    if (activeId === p.id) setActiveId(null)
+  }
 
-  const canNav = photos.length > 1
+  // --- komentarze ---
+
+  async function loadComments(photoId: string) {
+    setComments([])
+    const { data, error } = await supabase
+      .from('photo_comments')
+      .select('id,photo_id,user_id,content,created_at')
+      .eq('photo_id', photoId)
+      .order('created_at', { ascending: true })
+    if (!error) setComments(data ?? [])
+  }
+
+  async function addComment() {
+    if (!newComment.trim() || !activeId) return
+    const { error } = await supabase
+      .from('photo_comments')
+      .insert({ photo_id: activeId, content: newComment })
+    if (error) { alert(error.message); return }
+    setNewComment('')
+    await loadComments(activeId)
+  }
+
+  async function deleteComment(id: string) {
+    const { error } = await supabase.from('photo_comments').delete().eq('id', id)
+    if (error) { alert(error.message); return }
+    if (activeId) await loadComments(activeId)
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
         <label className="text-sm font-medium">Dodaj zdjęcie</label>
-        <input type="file" accept="image/*" onChange={onUpload} disabled={uploading || !weddingId}/>
+        <input type="file" accept="image/*" onChange={e => setSelectedFile(e.target.files?.[0] || null)} />
+        <button className="btn disabled:opacity-50" onClick={uploadSelected} disabled={!selectedFile || uploading}>
+          {uploading ? 'Wgrywam…' : 'Dodaj'}
+        </button>
+        {err && <span className="text-sm text-red-600">{err}</span>}
       </div>
 
-      {err && <p className="text-red-600 text-sm">{err}</p>}
-
-      {/* siatka miniatur */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        {photos.map((p, i) => (
-          <button
-            key={p.id}
-            className="block border rounded overflow-hidden focus:outline-none focus:ring-2 focus:ring-brand-500"
-            onClick={() => { setIdx(i); setOpen(true) }}
-            title={p.who ? `Autor: ${p.who}` : 'Podgląd'}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={p.url} alt="" className="w-full h-40 object-cover" />
-          </button>
-        ))}
-      </div>
-
-      {/* Lightbox */}
-      {open && current && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setOpen(false)}
-        >
-          <div className="relative max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={current.url} alt="" className="max-h-[80vh] w-full object-contain rounded" />
-            <div className="mt-2 flex items-center justify-between text-white/90 text-sm">
-              <div>{current.who ? `Autor: ${current.who}` : 'Autor: —'}</div>
-              <div className="flex items-center gap-3">
-                <a href={current.url} download className="underline">Pobierz</a>
-                <button className="px-2 py-1 rounded bg-white/10 hover:bg-white/20" onClick={() => setOpen(false)}>Zamknij</button>
+        {photos.map(p => {
+          const src = publicUrls[p.id]
+          const by = p.uploaded_by ? (nameByUserId[p.uploaded_by] || 'Gość') : 'Gość'
+          const canDelete = isOrganizer || (!!myId && myId === p.uploaded_by)
+          return (
+            <div key={p.id} className="border rounded overflow-hidden">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={src}
+                alt=""
+                className="w-full h-40 object-cover cursor-pointer"
+                onClick={() => { setActiveId(p.id); loadComments(p.id) }}
+              />
+              <div className="p-2 flex items-center justify-between text-sm">
+                <span className="text-slate-600 truncate">Autor: {by}</span>
+                {canDelete && (
+                  <button className="text-red-600 hover:underline" onClick={() => deletePhoto(p)}>
+                    Usuń
+                  </button>
+                )}
               </div>
             </div>
+          )
+        })}
+      </div>
 
-            {canNav && (
-              <>
-                <button
-                  className="absolute left-0 top-1/2 -translate-y-1/2 px-3 py-2 text-white text-2xl"
-                  onClick={() => setIdx(i => (i - 1 + photos.length) % photos.length)}
-                  aria-label="Poprzednie"
-                >‹</button>
-                <button
-                  className="absolute right-0 top-1/2 -translate-y-1/2 px-3 py-2 text-white text-2xl"
-                  onClick={() => setIdx(i => (i + 1) % photos.length)}
-                  aria-label="Następne"
-                >›</button>
-              </>
-            )}
+      {/* LIGHTBOX + komentarze */}
+      {activePhoto && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-4xl w-full overflow-hidden">
+            <div className="flex items-center justify-between p-3 border-b">
+              <div className="text-sm">
+                <strong>{activePhoto.uploaded_by ? (nameByUserId[activePhoto.uploaded_by] || 'Gość') : 'Gość'}</strong>
+                <span className="text-slate-600"> • {new Date(activePhoto.created_at).toLocaleString()}</span>
+              </div>
+              <button className="nav-link" onClick={() => setActiveId(null)}>Zamknij</button>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={publicUrls[activePhoto.id]}
+                alt=""
+                className="md:col-span-2 w-full h-[60vh] object-contain bg-black"
+              />
+
+              <div className="p-3 flex flex-col gap-3">
+                <h3 className="font-semibold">Komentarze</h3>
+                <div className="space-y-2 max-h-[48vh] overflow-auto pr-1">
+                  {comments.map(c => (
+                    <div key={c.id} className="rounded border p-2">
+                      <div className="text-xs text-slate-600 mb-1">
+                        <strong>{c.user_id ? (nameByUserId[c.user_id] || 'Gość') : 'Gość'}</strong>
+                        <span> • {new Date(c.created_at).toLocaleString()}</span>
+                      </div>
+                      <div className="whitespace-pre-wrap">{c.content}</div>
+                      {(isOrganizer || (myId && myId === c.user_id)) && (
+                        <button className="text-xs text-red-600 mt-1 hover:underline"
+                                onClick={() => deleteComment(c.id)}>
+                          Usuń
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {comments.length === 0 && <div className="text-sm text-slate-500">Brak komentarzy.</div>}
+                </div>
+
+                <div className="flex gap-2 mt-auto">
+                  <input
+                    className="flex-1 border rounded p-2"
+                    placeholder="Dodaj komentarz…"
+                    value={newComment}
+                    onChange={e => setNewComment(e.target.value)}
+                  />
+                  <button className="btn" onClick={addComment}>Dodaj</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
