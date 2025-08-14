@@ -11,9 +11,9 @@ const PDFDownloadLink = dynamic(
   { ssr: false }
 )
 
-type Table = { id: string; name: string }
-type Assigned = { table_id: string; guest_id: string }
-type Guest = { id: string; full_name: string }
+type Table   = { id: string; name: string }
+type Assigned= { table_id: string; guest_id: string }
+type Guest   = { id: string; full_name: string }
 
 type PlanLink = { path: string; url: string }
 
@@ -24,8 +24,11 @@ export default function TablesPage() {
   const [guests, setGuests] = useState<Guest[]>([])
   const [weddingId, setWeddingId] = useState<string | null>(null)
 
-  const [signedUrl, setSignedUrl] = useState<string | null>(null) // wynik zapisu/generowania dla organizatora
-  const [currentPlans, setCurrentPlans] = useState<PlanLink[]>([]) // to, co ma zobaczyć każdy
+  const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [currentPlans, setCurrentPlans] = useState<PlanLink[]>([])   // publikowane (A/B + fallback)
+  const [allFiles, setAllFiles] = useState<string[]>([])             // wszystko w folderze wesela (dla admina)
+
+  const [slot, setSlot] = useState<'A' | 'B'>('A')                   // gdzie zapisać: Plan A / Plan B
   const [isOrganizer, setIsOrganizer] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -35,21 +38,21 @@ export default function TablesPage() {
       const wid = await getMyWeddingId()
       setWeddingId(wid)
 
-      // dane do podglądu układu (przydadzą się organizatorowi)
       const { data: t } = await supabase.from('tables').select('id,name').order('name')
       const { data: a } = await supabase.from('table_assignments').select('table_id,guest_id')
       const { data: g } = await supabase.from('guests').select('id,full_name').order('full_name')
       setTables(t ?? []); setAssign(a ?? []); setGuests(g ?? [])
 
-      // rola
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
         const { data: r } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
         setIsOrganizer(r?.role === 'organizer')
       }
 
-      // wczytaj link(i) do aktualnego planu (dla wszystkich)
-      if (wid) await loadCurrentPlanLinks(wid)
+      if (wid) {
+        await loadCurrentPlanLinks(wid)
+        await refreshAllFiles(wid)
+      }
     })().catch((e) => setErr(String(e)))
   }, [])
 
@@ -62,36 +65,38 @@ export default function TablesPage() {
     }))
   }, [tables, assign, guests])
 
+  async function refreshAllFiles(wid: string) {
+    const { data: list } = await supabase.storage.from('pdf').list(wid, { limit: 100 })
+    setAllFiles((list ?? []).map(o => `${wid}/${o.name}`))
+  }
+
   async function loadCurrentPlanLinks(wid: string) {
-    // Najpierw spróbuj „standardowych” nazw
-    const candidates = [
+    // Priorytet: Plan A, potem Plan B (różne rozszerzenia)
+    const A = [`${wid}/plan-stolow-A.pdf`, `${wid}/plan-stolow-A.png`, `${wid}/plan-stolow-A.jpg`, `${wid}/plan-stolow-A.jpeg`]
+    const B = [`${wid}/plan-stolow-B.pdf`, `${wid}/plan-stolow-B.png`, `${wid}/plan-stolow-B.jpg`, `${wid}/plan-stolow-B.jpeg`]
+    const fallback = [
       `${wid}/plan-stolow-custom.pdf`,
       `${wid}/plan-stolow.pdf`,
       `${wid}/plan-stolow.png`,
       `${wid}/plan-stolow.jpg`,
       `${wid}/plan-stolow.jpeg`,
     ]
-    const found: PlanLink[] = []
 
-    for (const p of candidates) {
+    const found: PlanLink[] = []
+    for (const p of [...A, ...B, ...fallback]) {
       const { data } = await supabase.storage.from('pdf').createSignedUrl(p, 60 * 10)
       if (data?.signedUrl) found.push({ path: p, url: data.signedUrl })
     }
-
-    // Jeśli nic nie znaleziono – pokaż wszystko co jest w folderze wesela
-    if (found.length === 0) {
-      const { data: list } = await supabase.storage.from('pdf').list(wid, { limit: 100 })
-      for (const obj of list ?? []) {
-        const path = `${wid}/${obj.name}`
-        const { data } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
-        if (data?.signedUrl) found.push({ path, url: data.signedUrl })
-      }
+    // usuń duplikaty tej samej bazowej nazwy (gdy istnieje kilka rozszerzeń)
+    const dedup: PlanLink[] = []
+    const seen = new Set<string>()
+    for (const f of found) {
+      const key = f.path.replace(/\.(pdf|png|jpe?g)$/i, '')
+      if (!seen.has(key)) { dedup.push(f); seen.add(key) }
     }
-
-    setCurrentPlans(found)
+    setCurrentPlans(dedup.slice(0, 2)) // pokazuj max 2 (A i B, jeśli są)
   }
 
-  /** Generuj PDF na froncie i zapisz w bucketcie `pdf` (tylko organizator) */
   async function generateAndUpload() {
     setErr(null)
     if (!isOrganizer) return
@@ -101,10 +106,9 @@ export default function TablesPage() {
     const doc = <SeatingPDF tables={model} />
     const blob = await pdf(doc).toBlob()
 
-    const path = `${weddingId}/plan-stolow.pdf`
+    const path = `${weddingId}/plan-stolow-${slot}.pdf`
     const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, {
-      upsert: true,
-      contentType: 'application/pdf',
+      upsert: true, contentType: 'application/pdf',
     })
     if (upErr) { setErr(upErr.message); return }
 
@@ -112,10 +116,10 @@ export default function TablesPage() {
     if (error || !data) { setErr(error?.message || 'Nie udało się utworzyć linku.'); return }
 
     setSignedUrl(data.signedUrl)
-    await loadCurrentPlanLinks(weddingId) // odśwież widok „aktualny plan”
+    await loadCurrentPlanLinks(weddingId)
+    await refreshAllFiles(weddingId)
   }
 
-  /** Wgraj własny plik (PDF/obraz) – tylko organizator */
   async function uploadOwn(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
     const file = e.target.files?.[0]
@@ -126,7 +130,7 @@ export default function TablesPage() {
     setUploading(true)
     try {
       const ext = (file.name.split('.').pop() || 'pdf').toLowerCase()
-      const path = `${weddingId}/plan-stolow-custom.${ext}`
+      const path = `${weddingId}/plan-stolow-${slot}.${ext}`
 
       const { error: upErr } = await supabase.storage.from('pdf').upload(path, file, {
         upsert: true,
@@ -138,6 +142,7 @@ export default function TablesPage() {
       if (sErr || !data) throw new Error(sErr?.message || 'Nie udało się utworzyć linku.')
       setSignedUrl(data.signedUrl)
       await loadCurrentPlanLinks(weddingId)
+      await refreshAllFiles(weddingId)
     } catch (e: any) {
       setErr(e?.message || 'Błąd wgrywania')
     } finally {
@@ -146,26 +151,37 @@ export default function TablesPage() {
     }
   }
 
-  /** Widok tylko do wyświetlenia aktualnego planu (dla gościa) */
+  async function deletePlan(path: string) {
+    if (!confirm(`Usunąć plik: ${path.split('/').pop()} ?`)) return
+    const res = await fetch('/api/admin/delete-plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path })
+    })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) { alert(j.error || 'Nie udało się usunąć pliku'); return }
+    if (weddingId) {
+      await loadCurrentPlanLinks(weddingId)
+      await refreshAllFiles(weddingId)
+    }
+  }
+
   function CurrentPlanView() {
     if (!currentPlans.length) {
       return <p className="text-slate-600">Brak opublikowanego planu stołów.</p>
     }
-    // bierzemy pierwszy jako „aktualny”
-    const primary = currentPlans[0]
     return (
       <div className="space-y-2">
-        <a href={primary.url} target="_blank" className="underline">Zobacz / pobierz aktualny plan</a>
-        {currentPlans.length > 1 && (
-          <div className="text-xs text-slate-600">
-            Dostępne także:
-            <ul className="list-disc ml-5">
-              {currentPlans.slice(1).map((p) => (
-                <li key={p.path}><a className="underline" href={p.url} target="_blank">{p.path.split('/').pop()}</a></li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <div className="text-sm text-slate-600">Wybierz plan do podglądu/pobrania:</div>
+        <ul className="list-disc ml-5">
+          {currentPlans.map((p) => (
+            <li key={p.path}>
+              <a className="underline" href={p.url} target="_blank">
+                {p.path.includes('-A.') ? 'Plan A' : p.path.includes('-B.') ? 'Plan B' : p.path.split('/').pop()}
+              </a>
+            </li>
+          ))}
+        </ul>
       </div>
     )
   }
@@ -174,7 +190,7 @@ export default function TablesPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Plan stołów</h1>
 
-      {/* Sekcja zawsze widoczna – link do aktualnego planu */}
+      {/* Sekcja widoczna dla wszystkich */}
       <div className="card">
         <div className="card-pad">
           <h2 className="text-lg font-semibold mb-2">Aktualny plan</h2>
@@ -182,10 +198,10 @@ export default function TablesPage() {
         </div>
       </div>
 
-      {/* Dalsze sekcje tylko dla organizatora */}
+      {/* Panel organizatora */}
       {isOrganizer && (
         <>
-          {/* Podgląd układu z bazy */}
+          {/* Podgląd układu z bazy (dla generatora PDF) */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {model.map((t, i) => (
               <div key={i} className="border rounded p-3 bg-white">
@@ -198,40 +214,75 @@ export default function TablesPage() {
           </div>
 
           {/* Akcje organizatora */}
-          <div className="flex flex-wrap items-center gap-4">
-            <PDFDownloadLink
-              document={<SeatingPDF tables={model} />}
-              fileName="plan-stolow.pdf"
-              className="underline"
-            >
-              Pobierz PDF lokalnie
-            </PDFDownloadLink>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-4">
+              <PDFDownloadLink
+                document={<SeatingPDF tables={model} />}
+                fileName="plan-stolow.pdf"
+                className="underline"
+              >
+                Pobierz PDF lokalnie
+              </PDFDownloadLink>
 
-            <button className="btn" onClick={generateAndUpload}>
-              Zapisz PDF do chmury (Supabase)
-            </button>
+              <div className="inline-flex items-center gap-3">
+                <span className="text-sm text-slate-600">Zapisz jako:</span>
+                <label className="inline-flex items-center gap-1 text-sm">
+                  <input type="radio" checked={slot === 'A'} onChange={() => setSlot('A')} />
+                  Plan A
+                </label>
+                <label className="inline-flex items-center gap-1 text-sm">
+                  <input type="radio" checked={slot === 'B'} onChange={() => setSlot('B')} />
+                  Plan B
+                </label>
+              </div>
 
-            <label className="inline-flex items-center gap-2 text-sm">
-              <span className="text-slate-600">lub wgraj własny plik:</span>
-              <input
-                type="file"
-                accept="application/pdf,image/*"
-                onChange={uploadOwn}
-                disabled={uploading}
-              />
-            </label>
+              <button className="btn" onClick={generateAndUpload}>
+                Zapisz PDF do chmury (Supabase)
+              </button>
+
+              <label className="inline-flex items-center gap-2 text-sm">
+                <span className="text-slate-600">lub wgraj własny plik:</span>
+                <input
+                  type="file"
+                  accept="application/pdf,image/*"
+                  onChange={uploadOwn}
+                  disabled={uploading}
+                />
+              </label>
+            </div>
+
+            {signedUrl && (
+              <a href={signedUrl} className="underline block" target="_blank">
+                Pobierz zapisany plik (link czasowy)
+              </a>
+            )}
           </div>
 
-          {signedUrl && (
-            <a href={signedUrl} className="underline block" target="_blank">
-              Pobierz zapisany plik (link czasowy)
-            </a>
-          )}
+          {/* Lista wszystkich plików w folderze wesela (kasowanie) */}
+          <div className="card">
+            <div className="card-pad">
+              <h3 className="font-semibold mb-2">Pliki w chmurze (folder PDF)</h3>
+              {!allFiles.length ? (
+                <div className="text-sm text-slate-600">Brak plików.</div>
+              ) : (
+                <ul className="divide-y">
+                  {allFiles.map(p => (
+                    <li key={p} className="py-2 flex items-center justify-between gap-3">
+                      <span className="truncate">{p.split('/').pop()}</span>
+                      <div className="flex items-center gap-2">
+                        <a className="underline text-sm" href={(supabase.storage.from('pdf').getPublicUrl(p).data.publicUrl)} target="_blank">Podgląd</a>
+                        <button className="btn" onClick={() => deletePlan(p)}>Usuń</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
         </>
       )}
 
       {err && <p className="text-red-600 text-sm">{err}</p>}
     </div>
-    
   )
 }
