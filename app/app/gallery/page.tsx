@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
 
@@ -20,6 +20,7 @@ export default function GalleryPage() {
   const [comments, setComments] = useState<Comment[]>([])
   const [names, setNames] = useState<Record<string,string>>({})
   const [newComment, setNewComment] = useState('')
+
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -72,13 +73,27 @@ export default function GalleryPage() {
 
   async function addComment() {
     if (!openId || !newComment.trim()) return
+
+    // ustal mój podpis, żeby KOMENTARZ od razu miał imię i nazwisko
+    const { data: { user } } = await supabase.auth.getUser()
+    let myId: string | null = null
+    let myName = 'Gość'
+    if (user?.id) {
+      myId = user.id
+      const { data: me } = await supabase.from('guests').select('full_name').eq('user_id', user.id).maybeSingle()
+      if (me?.full_name) myName = me.full_name
+    }
+
     const { data, error } = await supabase
       .from('photo_comments')
-      .insert({ photo_id: openId, content: newComment })
+      .insert({ photo_id: openId, content: newComment }) // user_id ustawi DEFAULT auth.uid()
       .select('id,content,created_at,user_id')
       .single()
     if (error) { setErr(error.message); return }
+
+    // dopisz nowy komentarz i znany podpis
     setComments(prev => [...prev, data as Comment])
+    if (myId) setNames(prev => ({ ...prev, [myId!]: myName }))
     setNewComment('')
   }
 

@@ -7,6 +7,7 @@ import { supaClient } from '@/lib/supabaseClient'
 const baseItems = [
   { href: '/app/info', label: 'Info' },
   { href: '/app/gallery', label: 'Galeria' },
+  { href: '/app/videos', label: 'Wideo' },     // ← NOWE
   { href: '/app/chat', label: 'Czat' },
   { href: '/app/guests', label: 'Goście' },
   { href: '/app/tables', label: 'Stoły/PDF' },
@@ -30,7 +31,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="space-y-5">
-      <nav className="card">
+      <nav className="card wedding-card">
         <div className="card-pad flex flex-wrap gap-2">
           {items.map(i => (
             <Link
@@ -43,7 +44,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           ))}
         </div>
       </nav>
-      <div className="card"><div className="card-pad prose prose-slate max-w-none">{children}</div></div>
+      <div className="card wedding-card"><div className="card-pad prose prose-slate max-w-none">{children}</div></div>
     </div>
   )
 }
