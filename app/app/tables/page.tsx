@@ -15,6 +15,8 @@ type Table = { id: string; name: string }
 type Assigned = { table_id: string; guest_id: string }
 type Guest = { id: string; full_name: string }
 
+type PlanLink = { path: string; url: string }
+
 export default function TablesPage() {
   const supabase = supaClient()
   const [tables, setTables] = useState<Table[]>([])
@@ -22,10 +24,8 @@ export default function TablesPage() {
   const [guests, setGuests] = useState<Guest[]>([])
   const [weddingId, setWeddingId] = useState<string | null>(null)
 
-  const [signedUrl, setSignedUrl] = useState<string | null>(null)     // link po zapisie/wgraniu
-  const [currentUrl, setCurrentUrl] = useState<string | null>(null)   // link do aktualnego pliku z chmury
-  const [currentName, setCurrentName] = useState<string | null>(null) // nazwa aktualnego pliku
-
+  const [signedUrl, setSignedUrl] = useState<string | null>(null) // wynik zapisu/generowania dla organizatora
+  const [currentPlans, setCurrentPlans] = useState<PlanLink[]>([]) // to, co ma zobaczyć każdy
   const [isOrganizer, setIsOrganizer] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -35,19 +35,21 @@ export default function TablesPage() {
       const wid = await getMyWeddingId()
       setWeddingId(wid)
 
+      // dane do podglądu układu (przydadzą się organizatorowi)
       const { data: t } = await supabase.from('tables').select('id,name').order('name')
       const { data: a } = await supabase.from('table_assignments').select('table_id,guest_id')
       const { data: g } = await supabase.from('guests').select('id,full_name').order('full_name')
       setTables(t ?? []); setAssign(a ?? []); setGuests(g ?? [])
 
+      // rola
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
         const { data: r } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
         setIsOrganizer(r?.role === 'organizer')
       }
 
-      // pobierz aktualny plan z chmury (najnowszy plik z folderu {weddingId}/)
-      if (wid) await loadCurrentPlan(wid)
+      // wczytaj link(i) do aktualnego planu (dla wszystkich)
+      if (wid) await loadCurrentPlanLinks(wid)
     })().catch((e) => setErr(String(e)))
   }, [])
 
@@ -60,25 +62,36 @@ export default function TablesPage() {
     }))
   }, [tables, assign, guests])
 
-  /** Wczytaj najnowszy plik z `pdf/{weddingId}/…` i zrób signed URL */
-  async function loadCurrentPlan(wid: string) {
-    setCurrentUrl(null); setCurrentName(null)
-    const { data: objs, error } = await supabase
-      .storage
-      .from('pdf')
-      .list(wid, { sortBy: { column: 'updated_at', order: 'desc' }, limit: 1 })
-    if (error) { setErr(error.message); return }
-    if (!objs || objs.length === 0) return
+  async function loadCurrentPlanLinks(wid: string) {
+    // Najpierw spróbuj „standardowych” nazw
+    const candidates = [
+      `${wid}/plan-stolow-custom.pdf`,
+      `${wid}/plan-stolow.pdf`,
+      `${wid}/plan-stolow.png`,
+      `${wid}/plan-stolow.jpg`,
+      `${wid}/plan-stolow.jpeg`,
+    ]
+    const found: PlanLink[] = []
 
-    const obj = objs[0]
-    const fullPath = `${wid}/${obj.name}`
-    const { data: link, error: sErr } = await supabase.storage.from('pdf').createSignedUrl(fullPath, 60 * 10)
-    if (sErr || !link) { setErr(sErr?.message || 'Nie udało się utworzyć linku do aktualnego pliku.'); return }
-    setCurrentUrl(link.signedUrl)
-    setCurrentName(obj.name)
+    for (const p of candidates) {
+      const { data } = await supabase.storage.from('pdf').createSignedUrl(p, 60 * 10)
+      if (data?.signedUrl) found.push({ path: p, url: data.signedUrl })
+    }
+
+    // Jeśli nic nie znaleziono – pokaż wszystko co jest w folderze wesela
+    if (found.length === 0) {
+      const { data: list } = await supabase.storage.from('pdf').list(wid, { limit: 100 })
+      for (const obj of list ?? []) {
+        const path = `${wid}/${obj.name}`
+        const { data } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+        if (data?.signedUrl) found.push({ path, url: data.signedUrl })
+      }
+    }
+
+    setCurrentPlans(found)
   }
 
-  /** Generuj PDF na froncie i zapisz go w bucketcie `pdf` (tylko organizer) */
+  /** Generuj PDF na froncie i zapisz w bucketcie `pdf` (tylko organizator) */
   async function generateAndUpload() {
     setErr(null)
     if (!isOrganizer) return
@@ -90,35 +103,41 @@ export default function TablesPage() {
 
     const path = `${weddingId}/plan-stolow.pdf`
     const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, {
-      upsert: true, contentType: 'application/pdf',
+      upsert: true,
+      contentType: 'application/pdf',
     })
     if (upErr) { setErr(upErr.message); return }
 
     const { data, error } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
-    if (error || !data) { setErr(error?.message || 'Nie udało się utworzyć linku do pobrania.'); return }
+    if (error || !data) { setErr(error?.message || 'Nie udało się utworzyć linku.'); return }
+
     setSignedUrl(data.signedUrl)
-    await loadCurrentPlan(weddingId) // odśwież „aktualny plan”
+    await loadCurrentPlanLinks(weddingId) // odśwież widok „aktualny plan”
   }
 
-  /** Wgraj własny plik (PDF/obraz) z dysku do `pdf/{weddingId}/…` (tylko organizer) */
+  /** Wgraj własny plik (PDF/obraz) – tylko organizator */
   async function uploadOwn(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
     const file = e.target.files?.[0]
     if (!file) return
     if (!isOrganizer) { setErr('Tylko organizator może wgrywać pliki.'); return }
     if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
+
     setUploading(true)
     try {
-      const ext = file.name.split('.').pop() || 'bin'
-      const path = `${weddingId}/plan-stolow.${ext}`
+      const ext = (file.name.split('.').pop() || 'pdf').toLowerCase()
+      const path = `${weddingId}/plan-stolow-custom.${ext}`
+
       const { error: upErr } = await supabase.storage.from('pdf').upload(path, file, {
-        upsert: true, contentType: file.type || (ext === 'pdf' ? 'application/pdf' : undefined),
+        upsert: true,
+        contentType: file.type || (ext === 'pdf' ? 'application/pdf' : undefined),
       })
       if (upErr) throw upErr
+
       const { data, error: sErr } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
-      if (sErr || !data) throw new Error(sErr?.message || 'Nie udało się utworzyć linku do pobrania.')
+      if (sErr || !data) throw new Error(sErr?.message || 'Nie udało się utworzyć linku.')
       setSignedUrl(data.signedUrl)
-      await loadCurrentPlan(weddingId) // odśwież „aktualny plan”
+      await loadCurrentPlanLinks(weddingId)
     } catch (e: any) {
       setErr(e?.message || 'Błąd wgrywania')
     } finally {
@@ -127,60 +146,90 @@ export default function TablesPage() {
     }
   }
 
-  return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Plan stołów</h1>
-
-      {/* Podgląd układu (z bazy) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {model.map((t, i) => (
-          <div key={i} className="border rounded p-3 bg-white">
-            <h2 className="font-semibold mb-2">{t.name}</h2>
+  /** Widok tylko do wyświetlenia aktualnego planu (dla gościa) */
+  function CurrentPlanView() {
+    if (!currentPlans.length) {
+      return <p className="text-slate-600">Brak opublikowanego planu stołów.</p>
+    }
+    // bierzemy pierwszy jako „aktualny”
+    const primary = currentPlans[0]
+    return (
+      <div className="space-y-2">
+        <a href={primary.url} target="_blank" className="underline">Zobacz / pobierz aktualny plan</a>
+        {currentPlans.length > 1 && (
+          <div className="text-xs text-slate-600">
+            Dostępne także:
             <ul className="list-disc ml-5">
-              {t.guests.map((g, j) => <li key={j}>{g}</li>)}
+              {currentPlans.slice(1).map((p) => (
+                <li key={p.path}><a className="underline" href={p.url} target="_blank">{p.path.split('/').pop()}</a></li>
+              ))}
             </ul>
           </div>
-        ))}
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold">Plan stołów</h1>
+
+      {/* Sekcja zawsze widoczna – link do aktualnego planu */}
+      <div className="card">
+        <div className="card-pad">
+          <h2 className="text-lg font-semibold mb-2">Aktualny plan</h2>
+          <CurrentPlanView />
+        </div>
       </div>
 
-      {/* Akcje */}
-      <div className="flex flex-wrap items-center gap-4">
-        {/* Pobierz lokalnie (zawsze dostępne) */}
-        <PDFDownloadLink document={<SeatingPDF tables={model} />} fileName="plan-stolow.pdf" className="underline">
-          Pobierz PDF lokalnie
-        </PDFDownloadLink>
+      {/* Dalsze sekcje tylko dla organizatora */}
+      {isOrganizer && (
+        <>
+          {/* Podgląd układu z bazy */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {model.map((t, i) => (
+              <div key={i} className="border rounded p-3 bg-white">
+                <h2 className="font-semibold mb-2">{t.name}</h2>
+                <ul className="list-disc ml-5">
+                  {t.guests.map((g, j) => <li key={j}>{g}</li>)}
+                </ul>
+              </div>
+            ))}
+          </div>
 
-        {/* Tylko organizator: generuj i wgraj albo wgraj własny plik */}
-        {isOrganizer ? (
-          <>
-            <button className="btn" onClick={generateAndUpload}>Zapisz PDF do chmury (Supabase)</button>
+          {/* Akcje organizatora */}
+          <div className="flex flex-wrap items-center gap-4">
+            <PDFDownloadLink
+              document={<SeatingPDF tables={model} />}
+              fileName="plan-stolow.pdf"
+              className="underline"
+            >
+              Pobierz PDF lokalnie
+            </PDFDownloadLink>
+
+            <button className="btn" onClick={generateAndUpload}>
+              Zapisz PDF do chmury (Supabase)
+            </button>
+
             <label className="inline-flex items-center gap-2 text-sm">
               <span className="text-slate-600">lub wgraj własny plik:</span>
-              <input type="file" accept="application/pdf,image/*" onChange={uploadOwn} disabled={uploading} />
+              <input
+                type="file"
+                accept="application/pdf,image/*"
+                onChange={uploadOwn}
+                disabled={uploading}
+              />
             </label>
-          </>
-        ) : (
-          <span className="text-sm text-slate-600">Tylko organizator może zapisać/wgrać plan do chmury.</span>
-        )}
-      </div>
+          </div>
 
-      {/* Link do aktualnego pliku z chmury */}
-      <div className="space-x-3">
-        {currentUrl ? (
-          <a href={currentUrl} target="_blank" className="underline">Zobacz / pobierz aktualny plan{currentName ? ` (${currentName})` : ''}</a>
-        ) : (
-          <span className="text-sm text-slate-600">Brak pliku w chmurze dla tego wesela.</span>
-        )}
-      </div>
-
-      {/* Link po świeżym zapisie/wgraniu (również działa) */}
-      {signedUrl && (
-        <a href={signedUrl} target="_blank" className="underline block">
-          Pobierz zapisany plik (link czasowy)
-        </a>
+          {signedUrl && (
+            <a href={signedUrl} className="underline block" target="_blank">
+              Pobierz zapisany plik (link czasowy)
+            </a>
+          )}
+        </>
       )}
 
-      {/* Błędy */}
       {err && <p className="text-red-600 text-sm">{err}</p>}
     </div>
   )
