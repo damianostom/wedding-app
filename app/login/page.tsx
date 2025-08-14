@@ -2,51 +2,47 @@
 import { supaClient } from '@/lib/supabaseClient'
 import { useState } from 'react'
 
-const SITE_URL =
-  (typeof window !== 'undefined' && window.location?.origin) ||
-  process.env.NEXT_PUBLIC_SITE_URL ||
-  'http://localhost:3000'
+function slugify(s: string) {
+  return s
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
 
 export default function LoginPage() {
   const supabase = supaClient()
-  const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
+  const [firstName, setFirst] = useState('')
+  const [lastName, setLast] = useState('')
+  const [password, setPass] = useState('')
+  const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
-    setLoading(true)
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        // KLUCZOWE: zawsze kierujemy na serwerowy callback
-        emailRedirectTo: `${SITE_URL}/auth/callback?next=/app`,
-      },
-    })
+    setErr(null); setLoading(true)
+
+    const username = `${slugify(firstName)}-${slugify(lastName)}`
+    const email = `${username}@noemail.local`
+
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
     setLoading(false)
-    if (error) alert(error.message)
-    else setSent(true)
+
+    if (error) setErr(error.message)
+    else window.location.href = '/app'
   }
 
   return (
     <div className="max-w-md mx-auto space-y-4">
-      <h1 className="text-2xl font-bold">Logowanie</h1>
-      {sent ? (
-        <p>Sprawdź skrzynkę – wysłaliśmy link logowania.</p>
-      ) : (
-        <form onSubmit={handleLogin} className="space-y-3">
-          <input
-            className="w-full border rounded p-2"
-            type="email"
-            placeholder="Twój e-mail"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <button className="btn disabled:opacity-50" disabled={loading || !email}>
-            {loading ? 'Wysyłam…' : 'Wyślij link'}
-          </button>
-        </form>
-      )}
+      <h1 className="text-2xl font-bold">Logowanie imię + nazwisko + hasło</h1>
+      <form onSubmit={handleLogin} className="space-y-3">
+        <input className="w-full border rounded p-2" placeholder="Imię" value={firstName} onChange={e=>setFirst(e.target.value)} />
+        <input className="w-full border rounded p-2" placeholder="Nazwisko" value={lastName} onChange={e=>setLast(e.target.value)} />
+        <input className="w-full border rounded p-2" type="password" placeholder="Hasło" value={password} onChange={e=>setPass(e.target.value)} />
+        <button className="btn w-full disabled:opacity-50" disabled={loading || !firstName || !lastName || !password}>
+          {loading ? 'Loguję…' : 'Zaloguj'}
+        </button>
+      </form>
+      {err && <p className="text-red-600 text-sm">{err}</p>}
+      <p className="text-sm text-slate-600">Nie masz konta? Poproś organizatora o dodanie w panelu „Admin → Konta gości”.</p>
     </div>
   )
 }
