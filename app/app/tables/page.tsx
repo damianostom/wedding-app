@@ -232,5 +232,6 @@ export default function TablesPage() {
 
       {err && <p className="text-red-600 text-sm">{err}</p>}
     </div>
+    
   )
 }
