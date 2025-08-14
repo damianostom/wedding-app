@@ -6,14 +6,45 @@ function slugify(s: string) {
     .toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')
 }
 
-export default function LoginPage() {
-  const [mode, setMode] = useState<'guest'|'organizer'>('guest')
-  const [first, setFirst] = useState('');  const [last, setLast] = useState('');  const [passG, setPassG] = useState('')
-  const [email, setEmail] = useState('');  const [passO, setPassO] = useState('')
-  const [err, setErr] = useState<string|null>(null); const [loading, setLoading] = useState(false)
+async function postJson(url: string, body: any) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  // bezpieczne parsowanie – jeśli nie JSON, czytamy tekst
+  const ct = res.headers.get('content-type') || ''
+  let data: any = null
+  try {
+    data = ct.includes('application/json') ? await res.json() : await res.text()
+  } catch {
+    data = null
+  }
+  if (!res.ok) {
+    const msg = (data && typeof data === 'object' && 'error' in data) ? (data as any).error : (typeof data === 'string' && data) || res.statusText
+    throw new Error(msg || 'Błąd zapytania')
+  }
+  return data
+}
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault(); setErr(null); setLoading(true)
+export default function LoginPage() {
+  const [mode, setMode] = useState<'guest' | 'organizer'>('guest')
+
+  // gość
+  const [first, setFirst] = useState('')
+  const [last, setLast] = useState('')
+  const [passG, setPassG] = useState('')
+
+  // organizator
+  const [email, setEmail] = useState('')
+  const [passO, setPassO] = useState('')
+
+  const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setErr(null); setLoading(true)
     try {
       let emailToSend = email, passwordToSend = passO
       if (mode === 'guest') {
@@ -21,15 +52,12 @@ export default function LoginPage() {
         emailToSend = `${username}@noemail.local`
         passwordToSend = passG
       }
-      const res = await fetch('/api/auth/password-login', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: emailToSend, password: passwordToSend })
-      })
-      const j = await res.json()
-      if (!res.ok) throw new Error(j.error || 'Błąd logowania')
-      window.location.assign('/app') // middleware już widzi sesję
-    } catch (e:any) {
-      setErr(e.message ?? 'Błąd'); setLoading(false)
+      await postJson('/api/auth/password-login', { email: emailToSend, password: passwordToSend })
+      // cookies ustawione po stronie serwera → middleware widzi sesję
+      window.location.assign('/app')
+    } catch (e: any) {
+      setErr(e.message ?? 'Błąd logowania')
+      setLoading(false)
     }
   }
 
@@ -42,8 +70,8 @@ export default function LoginPage() {
         <button className={`nav-link ${mode==='organizer'?'nav-link-active':''}`} onClick={()=>setMode('organizer')}>Organizator</button>
       </div>
 
-      <form onSubmit={submit} className="space-y-3">
-        {mode==='guest' ? (
+      <form onSubmit={onSubmit} className="space-y-3">
+        {mode === 'guest' ? (
           <>
             <input className="w-full border rounded p-2" placeholder="Imię" value={first} onChange={e=>setFirst(e.target.value)} />
             <input className="w-full border rounded p-2" placeholder="Nazwisko" value={last} onChange={e=>setLast(e.target.value)} />
