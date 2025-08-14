@@ -1,9 +1,16 @@
 'use client'
+
+import dynamic from 'next/dynamic'
 import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
-import { PDFDownloadLink, pdf } from '@react-pdf/renderer'
 import { SeatingPDF } from '@/components/SeatingPDF'
 import { useEffect, useMemo, useState } from 'react'
+
+// ⬇️ PDFDownloadLink tylko w przeglądarce (żeby build na Vercel nie wybuchał)
+const PDFDownloadLink = dynamic(
+  () => import('@react-pdf/renderer').then(m => m.PDFDownloadLink),
+  { ssr: false }
+)
 
 type Table = { id: string; name: string }
 type Assigned = { table_id: string; guest_id: string }
@@ -31,18 +38,25 @@ export default function TablesPage() {
   const model = useMemo(() => {
     return tables.map(t => ({
       name: t.name,
-      guests: assign.filter(a=>a.table_id===t.id).map(a=>guests.find(g=>g.id===a.guest_id)?.full_name || '???')
+      guests: assign
+        .filter(a => a.table_id === t.id)
+        .map(a => guests.find(g => g.id === a.guest_id)?.full_name || '???')
     }))
   }, [tables, assign, guests])
 
   async function generateAndUpload() {
     if (!weddingId) return
+    // ⬇️ import funkcji pdf dopiero w momencie użycia (tylko w przeglądarce)
+    const { pdf } = await import('@react-pdf/renderer')
     const doc = <SeatingPDF tables={model} />
     const blob = await pdf(doc).toBlob()
     const path = `${weddingId}/plan-stolow.pdf`
-    const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, { upsert: true, contentType: 'application/pdf' })
+    const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, {
+      upsert: true,
+      contentType: 'application/pdf',
+    })
     if (upErr) { alert(upErr.message); return }
-    const { data, error } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10) // 10 min
+    const { data, error } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
     if (error) { alert(error.message); return }
     setSignedUrl(data.signedUrl)
   }
@@ -50,6 +64,7 @@ export default function TablesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Plan stołów</h1>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {model.map((t, i) => (
           <div key={i} className="border rounded p-3">
@@ -61,16 +76,26 @@ export default function TablesPage() {
         ))}
       </div>
 
-      <div className="flex gap-3">
-        <PDFDownloadLink document={<SeatingPDF tables={model} />} fileName="plan-stolow.pdf" className="underline">
+      <div className="flex flex-wrap gap-3 items-center">
+        {/* ⬇️ Ten komponent wyrenderuje się tylko w przeglądarce (na serwerze jest pomijany) */}
+        <PDFDownloadLink
+          document={<SeatingPDF tables={model} />}
+          fileName="plan-stolow.pdf"
+          className="underline"
+        >
           Pobierz PDF lokalnie
         </PDFDownloadLink>
-        <button className="bg-black text-white px-4 py-2 rounded" onClick={generateAndUpload}>
+
+        <button className="btn" onClick={generateAndUpload}>
           Zapisz PDF do chmury (Supabase)
         </button>
       </div>
 
-      {signedUrl && <a href={signedUrl} className="underline block" target="_blank">Pobierz zapisany PDF (link czasowy)</a>}
+      {signedUrl && (
+        <a href={signedUrl} className="underline block" target="_blank">
+          Pobierz zapisany PDF (link czasowy)
+        </a>
+      )}
     </div>
   )
 }
