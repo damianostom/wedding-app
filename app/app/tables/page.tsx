@@ -15,8 +15,6 @@ type Table = { id: string; name: string }
 type Assigned = { table_id: string; guest_id: string }
 type Guest = { id: string; full_name: string }
 
-const BUCKET = 'pdf' // <- jeśli nazwiesz bucket inaczej, zmień tutaj
-
 export default function TablesPage() {
   const supabase = supaClient()
   const [tables, setTables] = useState<Table[]>([])
@@ -24,7 +22,10 @@ export default function TablesPage() {
   const [guests, setGuests] = useState<Guest[]>([])
   const [weddingId, setWeddingId] = useState<string | null>(null)
 
-  const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [signedUrl, setSignedUrl] = useState<string | null>(null)     // link po zapisie/wgraniu
+  const [currentUrl, setCurrentUrl] = useState<string | null>(null)   // link do aktualnego pliku z chmury
+  const [currentName, setCurrentName] = useState<string | null>(null) // nazwa aktualnego pliku
+
   const [isOrganizer, setIsOrganizer] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -37,9 +38,7 @@ export default function TablesPage() {
       const { data: t } = await supabase.from('tables').select('id,name').order('name')
       const { data: a } = await supabase.from('table_assignments').select('table_id,guest_id')
       const { data: g } = await supabase.from('guests').select('id,full_name').order('full_name')
-      setTables(t ?? [])
-      setAssign(a ?? [])
-      setGuests(g ?? [])
+      setTables(t ?? []); setAssign(a ?? []); setGuests(g ?? [])
 
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
@@ -47,15 +46,10 @@ export default function TablesPage() {
         setIsOrganizer(r?.role === 'organizer')
       }
 
-      // spróbuj od razu wygenerować signed URL do istniejącego pliku
-      if (wid) {
-        const path = `${wid}/plan-stolow.pdf`
-        const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 10)
-        if (!error && data?.signedUrl) setSignedUrl(data.signedUrl)
-        // jeśli plik nie istnieje, po prostu nie pokazujemy linku
-      }
+      // pobierz aktualny plan z chmury (najnowszy plik z folderu {weddingId}/)
+      if (wid) await loadCurrentPlan(wid)
     })().catch((e) => setErr(String(e)))
-  }, []) // mount
+  }, [])
 
   const model = useMemo(() => {
     return tables.map((t) => ({
@@ -66,66 +60,65 @@ export default function TablesPage() {
     }))
   }, [tables, assign, guests])
 
-  /** Generuj PDF na froncie i zapisz w bucketcie `pdf` (tylko organizer) */
+  /** Wczytaj najnowszy plik z `pdf/{weddingId}/…` i zrób signed URL */
+  async function loadCurrentPlan(wid: string) {
+    setCurrentUrl(null); setCurrentName(null)
+    const { data: objs, error } = await supabase
+      .storage
+      .from('pdf')
+      .list(wid, { sortBy: { column: 'updated_at', order: 'desc' }, limit: 1 })
+    if (error) { setErr(error.message); return }
+    if (!objs || objs.length === 0) return
+
+    const obj = objs[0]
+    const fullPath = `${wid}/${obj.name}`
+    const { data: link, error: sErr } = await supabase.storage.from('pdf').createSignedUrl(fullPath, 60 * 10)
+    if (sErr || !link) { setErr(sErr?.message || 'Nie udało się utworzyć linku do aktualnego pliku.'); return }
+    setCurrentUrl(link.signedUrl)
+    setCurrentName(obj.name)
+  }
+
+  /** Generuj PDF na froncie i zapisz go w bucketcie `pdf` (tylko organizer) */
   async function generateAndUpload() {
     setErr(null)
     if (!isOrganizer) return
-    if (!weddingId) {
-      setErr('Brak powiązania z weselem.')
-      return
-    }
+    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
 
     const { pdf } = await import('@react-pdf/renderer')
     const doc = <SeatingPDF tables={model} />
     const blob = await pdf(doc).toBlob()
 
     const path = `${weddingId}/plan-stolow.pdf`
-    const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, blob, {
-      upsert: true,
-      contentType: 'application/pdf',
+    const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, {
+      upsert: true, contentType: 'application/pdf',
     })
-    if (upErr) {
-      setErr(upErr.message)
-      return
-    }
+    if (upErr) { setErr(upErr.message); return }
 
-    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 10)
-    if (error || !data) {
-      setErr(error?.message || 'Nie udało się utworzyć linku do pobrania.')
-      return
-    }
+    const { data, error } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+    if (error || !data) { setErr(error?.message || 'Nie udało się utworzyć linku do pobrania.'); return }
     setSignedUrl(data.signedUrl)
+    await loadCurrentPlan(weddingId) // odśwież „aktualny plan”
   }
 
-  /** Wgraj własny plik (PDF/obraz) z dysku i zapisz w bucketcie `pdf` (tylko organizer) */
+  /** Wgraj własny plik (PDF/obraz) z dysku do `pdf/{weddingId}/…` (tylko organizer) */
   async function uploadOwn(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
     const file = e.target.files?.[0]
     if (!file) return
-    if (!isOrganizer) {
-      setErr('Tylko organizator może wgrywać pliki.')
-      return
-    }
-    if (!weddingId) {
-      setErr('Brak powiązania z weselem.')
-      return
-    }
+    if (!isOrganizer) { setErr('Tylko organizator może wgrywać pliki.'); return }
+    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     setUploading(true)
     try {
       const ext = file.name.split('.').pop() || 'bin'
       const path = `${weddingId}/plan-stolow.${ext}`
-
-      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
-        upsert: true,
-        contentType: file.type || (ext === 'pdf' ? 'application/pdf' : undefined),
+      const { error: upErr } = await supabase.storage.from('pdf').upload(path, file, {
+        upsert: true, contentType: file.type || (ext === 'pdf' ? 'application/pdf' : undefined),
       })
       if (upErr) throw upErr
-
-      const { data, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 10)
-      if (sErr || !data) {
-        throw new Error(sErr?.message || 'Nie udało się utworzyć linku do pobrania.')
-      }
+      const { data, error: sErr } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+      if (sErr || !data) throw new Error(sErr?.message || 'Nie udało się utworzyć linku do pobrania.')
       setSignedUrl(data.signedUrl)
+      await loadCurrentPlan(weddingId) // odśwież „aktualny plan”
     } catch (e: any) {
       setErr(e?.message || 'Błąd wgrywania')
     } finally {
@@ -138,57 +131,56 @@ export default function TablesPage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Plan stołów</h1>
 
+      {/* Podgląd układu (z bazy) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {model.map((t, i) => (
           <div key={i} className="border rounded p-3 bg-white">
             <h2 className="font-semibold mb-2">{t.name}</h2>
             <ul className="list-disc ml-5">
-              {t.guests.map((g, j) => (
-                <li key={j}>{g}</li>
-              ))}
+              {t.guests.map((g, j) => <li key={j}>{g}</li>)}
             </ul>
           </div>
         ))}
       </div>
 
+      {/* Akcje */}
       <div className="flex flex-wrap items-center gap-4">
-        <PDFDownloadLink
-          document={<SeatingPDF tables={model} />}
-          fileName="plan-stolow.pdf"
-          className="underline"
-        >
+        {/* Pobierz lokalnie (zawsze dostępne) */}
+        <PDFDownloadLink document={<SeatingPDF tables={model} />} fileName="plan-stolow.pdf" className="underline">
           Pobierz PDF lokalnie
         </PDFDownloadLink>
 
+        {/* Tylko organizator: generuj i wgraj albo wgraj własny plik */}
         {isOrganizer ? (
           <>
-            <button className="btn" onClick={generateAndUpload}>
-              Zapisz PDF do chmury (Supabase)
-            </button>
-
+            <button className="btn" onClick={generateAndUpload}>Zapisz PDF do chmury (Supabase)</button>
             <label className="inline-flex items-center gap-2 text-sm">
               <span className="text-slate-600">lub wgraj własny plik:</span>
-              <input
-                type="file"
-                accept="application/pdf,image/*"
-                onChange={uploadOwn}
-                disabled={uploading}
-              />
+              <input type="file" accept="application/pdf,image/*" onChange={uploadOwn} disabled={uploading} />
             </label>
           </>
         ) : (
-          <span className="text-sm text-slate-600">
-            Tylko organizator może zapisać/wgrać plan do chmury.
-          </span>
+          <span className="text-sm text-slate-600">Tylko organizator może zapisać/wgrać plan do chmury.</span>
         )}
       </div>
 
+      {/* Link do aktualnego pliku z chmury */}
+      <div className="space-x-3">
+        {currentUrl ? (
+          <a href={currentUrl} target="_blank" className="underline">Zobacz / pobierz aktualny plan{currentName ? ` (${currentName})` : ''}</a>
+        ) : (
+          <span className="text-sm text-slate-600">Brak pliku w chmurze dla tego wesela.</span>
+        )}
+      </div>
+
+      {/* Link po świeżym zapisie/wgraniu (również działa) */}
       {signedUrl && (
         <a href={signedUrl} target="_blank" className="underline block">
-          Zobacz / pobierz aktualny plan
+          Pobierz zapisany plik (link czasowy)
         </a>
       )}
 
+      {/* Błędy */}
       {err && <p className="text-red-600 text-sm">{err}</p>}
     </div>
   )
