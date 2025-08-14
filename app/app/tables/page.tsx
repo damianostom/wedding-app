@@ -22,7 +22,9 @@ export default function TablesPage() {
   const [guests, setGuests] = useState<Guest[]>([])
   const [weddingId, setWeddingId] = useState<string | null>(null)
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [customUrl, setCustomUrl] = useState<string | null>(null)
   const [isOrganizer, setIsOrganizer] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
@@ -39,8 +41,22 @@ export default function TablesPage() {
         const { data: r } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
         setIsOrganizer(r?.role === 'organizer')
       }
+
+      // Jeśli istnieje „ręcznie wgrany” plan – spróbuj znaleźć i zrobić signed URL
+      if (wid) {
+        const { data: list, error: listErr } = await supabase.storage.from('pdf').list(wid)
+        if (!listErr && list && list.length) {
+          const item = list.find(f => f.name.startsWith('plan-stolow-custom'))
+                 || list.find(f => f.name.startsWith('plan-stolow'))
+          if (item) {
+            const path = `${wid}/${item.name}`
+            const { data: s } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+            if (s) setCustomUrl(s.signedUrl)
+          }
+        }
+      }
     })().catch(e => setErr(String(e)))
-  }, [])
+  }, []) // mount
 
   const model = useMemo(() => {
     return tables.map(t => ({
@@ -66,20 +82,30 @@ export default function TablesPage() {
     setSignedUrl(data.signedUrl)
   }
 
+  async function uploadCustom(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file || !weddingId) return
+    setUploading(true); setErr(null)
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'pdf'
+    const path = `${weddingId}/plan-stolow-custom.${ext}`
+    const { error: upErr } = await supabase.storage.from('pdf').upload(path, file, {
+      upsert: true, contentType: file.type || (ext === 'pdf' ? 'application/pdf' : undefined)
+    })
+    if (upErr) { setErr(upErr.message); setUploading(false); return }
+    const { data } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+    setCustomUrl(data?.signedUrl || null)
+    setUploading(false)
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <h1 className="text-2xl font-bold">Plan stołów</h1>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {model.map((t, i) => (
-          <div key={i} className="border rounded p-3">
-            <h2 className="font-semibold mb-2">{t.name}</h2>
-            <ul className="list-disc ml-5">
-              {t.guests.map((g, j) => <li key={j}>{g}</li>)}
-            </ul>
-          </div>
-        ))}
-      </div>
+      <p className="text-slate-600">
+        Masz dwie opcje:
+        <br/>• <strong>Pobierz PDF lokalnie</strong> – automatycznie generowany z bazy.
+        <br/>• <strong>Wgraj gotowy plik (PDF/JPG/PNG)</strong> – np. własny projekt.
+      </p>
 
       <div className="flex flex-wrap gap-3 items-center">
         <PDFDownloadLink
@@ -90,16 +116,44 @@ export default function TablesPage() {
           Pobierz PDF lokalnie
         </PDFDownloadLink>
 
-        {isOrganizer ? (
+        {isOrganizer && (
           <button className="btn" onClick={generateAndUpload}>
             Zapisz PDF do chmury (Supabase)
           </button>
-        ) : (
-          <span className="text-sm text-slate-600">Tylko organizator może zapisać PDF do chmury.</span>
         )}
       </div>
 
-      {signedUrl && <a href={signedUrl} className="underline block" target="_blank">Pobierz zapisany PDF (link czasowy)</a>}
+      {signedUrl && (
+        <p>
+          <a href={signedUrl} className="underline" target="_blank">Pobierz zapisany PDF (link czasowy)</a>
+        </p>
+      )}
+
+      <hr className="my-4"/>
+
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold">Wgraj gotowy plik z planem</h2>
+        {isOrganizer ? (
+          <>
+            <input
+              type="file"
+              accept="application/pdf,image/*"
+              onChange={uploadCustom}
+              disabled={uploading || !weddingId}
+            />
+            {uploading && <p className="text-slate-600 text-sm">Wysyłam…</p>}
+          </>
+        ) : (
+          <p className="text-slate-600">Tę sekcję widzi tylko organizator.</p>
+        )}
+
+        {customUrl && (
+          <p>
+            Aktualny wgrany plan: <a href={customUrl} target="_blank" className="underline">Otwórz</a>
+          </p>
+        )}
+      </div>
+
       {err && <p className="text-red-600 text-sm">{err}</p>}
     </div>
   )

@@ -4,7 +4,7 @@ import { getMyWeddingId } from '@/lib/getWeddingId'
 import { useEffect, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
-type Msg = { id: number | string; content: string; created_at: string; user_id: string | null }
+type Msg = { id: number | string; content: string; created_at: string; user_id: string | null; sender_name?: string }
 
 export default function ChatPage() {
   const supabase = supaClient()
@@ -12,9 +12,9 @@ export default function ChatPage() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [text, setText] = useState('')
   const [err, setErr] = useState<string | null>(null)
+  const [names, setNames] = useState<Record<string,string>>({})
   const channelRef = useRef<RealtimeChannel | null>(null)
 
-  // prosta deduplikacja po id+created_at
   const seen = useRef(new Set<string>())
 
   useEffect(() => {
@@ -23,15 +23,29 @@ export default function ChatPage() {
       setWeddingId(wid)
       if (!wid) { setErr('Brak powiązania z weselem — dodaj rekord w "guests" dla zalogowanego użytkownika.'); return }
 
-      // 1) Historia z DB
+      // 1) Historia
       const { data, error } = await supabase
-        .from('messages').select('id,content,created_at,user_id')
-        .eq('wedding_id', wid).order('created_at', { ascending: true })
+        .from('messages')
+        .select('id,content,created_at,user_id')
+        .eq('wedding_id', wid)
+        .order('created_at', { ascending: true })
       if (error) setErr(error.message)
       for (const m of data ?? []) seen.current.add(`${m.id}|${m.created_at}`)
       setMsgs(data ?? [])
 
-      // 2) Subskrypcja Broadcast (działa bez replication)
+      // 1a) mapka user_id -> full_name
+      const ids = Array.from(new Set((data ?? []).map(m => m.user_id).filter(Boolean))) as string[]
+      if (ids.length) {
+        const { data: gs } = await supabase
+          .from('guests')
+          .select('user_id,full_name')
+          .in('user_id', ids)
+        const m: Record<string,string> = {}
+        for (const g of gs ?? []) m[g.user_id] = g.full_name
+        setNames(m)
+      }
+
+      // 2) Kanał realtime (broadcast + postgres_changes gdy jest)
       const ch = supabase.channel(`chat:${wid}`, { config: { broadcast: { ack: true } } })
 
       ch.on('broadcast', { event: 'new-message' }, payload => {
@@ -40,9 +54,11 @@ export default function ChatPage() {
         if (seen.current.has(key)) return
         seen.current.add(key)
         setMsgs(prev => [...prev, m])
+        if (m.user_id && m.sender_name) {
+          setNames(prev => ({ ...prev, [m.user_id as string]: m.sender_name as string }))
+        }
       })
 
-      // 3) (opcjonalnie) jeśli jednak publications działają – nasłuch INSERT
       ch.on('postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `wedding_id=eq.${wid}` },
         (payload: any) => {
@@ -54,21 +70,28 @@ export default function ChatPage() {
         }
       )
 
-      channelRef.current = ch.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          // ok
-        }
-      })
-
+      channelRef.current = ch.subscribe()
       return () => { if (channelRef.current) supabase.removeChannel(channelRef.current) }
     })()
-  }, [])
+  }, []) // mount
 
   async function send() {
     setErr(null)
     if (!text.trim() || !weddingId) return
 
-    // najpierw zapisz w DB (trwałość)
+    const { data: { user } } = await supabase.auth.getUser()
+    // moja nazwa do szybkiego podglądu
+    let myName = 'Gość'
+    if (user?.id) {
+      const { data: me } = await supabase
+        .from('guests')
+        .select('full_name')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      myName = me?.full_name || myName
+    }
+
+    // 1) zapisz w DB
     const { data, error } = await supabase
       .from('messages')
       .insert({ wedding_id: weddingId, content: text })
@@ -77,23 +100,35 @@ export default function ChatPage() {
 
     if (error) { setErr(error.message); return }
 
-    // wyślij broadcast (natychmiastowa aktualizacja u wszystkich)
+    // 2) broadcast z nazwą (nie musi być w DB)
     if (channelRef.current) {
       channelRef.current.send({
         type: 'broadcast',
         event: 'new-message',
-        payload: data as Msg,
+        payload: { ...data, sender_name: myName } as Msg,
       })
     }
 
-    setMsgs(prev => [...prev, data as Msg]) // lokalnie też dodaj
+    setMsgs(prev => [...prev, { ...data, sender_name: myName } as Msg])
+    if (data.user_id) setNames(prev => ({ ...prev, [data.user_id as string]: myName }))
     setText('')
   }
 
+  function labelFor(m: Msg) {
+    if (m.user_id && names[m.user_id]) return names[m.user_id]
+    if (m.sender_name) return m.sender_name
+    return 'Gość'
+  }
+
   return (
-    <div className="flex flex-col h-[70vh] border rounded">
+    <div className="flex flex-col h-[70vh] border rounded bg-white">
       <div className="flex-1 overflow-auto p-3 space-y-2">
-        {msgs.map((m, i) => <div key={`${m.id}-${i}`} className="rounded bg-gray-100 px-2 py-1">{m.content}</div>)}
+        {msgs.map((m, i) => (
+          <div key={`${m.id}-${i}`} className="rounded bg-gray-100 px-2 py-1">
+            <div className="text-xs text-slate-600 mb-0.5"><strong>{labelFor(m)}</strong></div>
+            <div>{m.content}</div>
+          </div>
+        ))}
       </div>
       <div className="border-t p-2 flex gap-2">
         <input className="flex-1 border rounded p-2" value={text} onChange={e=>setText(e.target.value)} placeholder="Napisz wiadomość..." />
