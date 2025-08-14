@@ -16,7 +16,7 @@ export default function VideosPage() {
   const [err, setErr] = useState<string | null>(null)
 
   const fileRef = useRef<HTMLInputElement | null>(null)
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
 
   const [openId, setOpenId] = useState<string | null>(null)
@@ -47,33 +47,34 @@ export default function VideosPage() {
   }, [])
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0] ?? null
-    setPendingFile(f)
+    setPendingFiles(Array.from(e.target.files ?? []))
   }
 
   async function uploadPicked() {
-    if (!pendingFile) return
+    if (!pendingFiles.length) return
     if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     setUploading(true)
     try {
-      const ext = pendingFile.name.split('.').pop() || 'mp4'
-      const path = `${weddingId}/${crypto.randomUUID()}.${ext}`
-      const { error: upErr } = await supabase.storage.from('videos').upload(path, pendingFile, {
-        upsert: true, contentType: pendingFile.type || 'video/mp4'
-      })
-      if (upErr) throw upErr
+      for (const f of pendingFiles) {
+        const ext = f.name.split('.').pop() || 'mp4'
+        const path = `${weddingId}/${crypto.randomUUID()}.${ext}`
+        const { error: upErr } = await supabase.storage.from('videos').upload(path, f, {
+          upsert: true, contentType: f.type || 'video/mp4'
+        })
+        if (upErr) throw upErr
 
-      const { data, error: insErr } = await supabase
-        .from('videos')
-        .insert({ wedding_id: weddingId, storage_path: path })
-        .select('id,storage_path,created_at,uploaded_by')
-        .single()
-      if (insErr) throw insErr
+        const { data, error: insErr } = await supabase
+          .from('videos')
+          .insert({ wedding_id: weddingId, storage_path: path })
+          .select('id,storage_path,created_at,uploaded_by')
+          .single()
+        if (insErr) throw insErr
 
-      const url = supabase.storage.from('videos').getPublicUrl(path).data.publicUrl
-      setVideos(prev => [data as Video, ...prev])
-      setUrls(prev => ({ ...prev, [(data as Video).id]: url }))
-      setPendingFile(null)
+        const url = supabase.storage.from('videos').getPublicUrl(path).data.publicUrl
+        setVideos(prev => [data as Video, ...prev])
+        setUrls(prev => ({ ...prev, [(data as Video).id]: url }))
+      }
+      setPendingFiles([])
       if (fileRef.current) fileRef.current.value = ''
     } catch (e:any) {
       setErr(e?.message || 'Błąd wgrywania')
@@ -99,15 +100,14 @@ export default function VideosPage() {
       <h1 className="text-2xl font-bold">Galeria wideo</h1>
 
       <div className="flex items-center gap-3">
-        <label className="text-sm font-medium">Dodaj film</label>
-        <input ref={fileRef} type="file" accept="video/*" onChange={onPick} />
-        <button className="btn disabled:opacity-50" onClick={uploadPicked} disabled={!pendingFile || uploading}>
-          {uploading ? 'Wgrywam…' : 'Wgraj'}
+        <label className="text-sm font-medium">Dodaj filmy</label>
+        <input ref={fileRef} type="file" accept="video/*" multiple onChange={onPick} />
+        <button className="btn disabled:opacity-50" onClick={uploadPicked} disabled={!pendingFiles.length || uploading}>
+          {uploading ? 'Wgrywam…' : `Wgraj (${pendingFiles.length})`}
         </button>
       </div>
       {err && <p className="text-red-600 text-sm">{err}</p>}
 
-      {/* miniatury = po prostu video z posterem/ pierwszą klatką */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {videos.map(v => {
           const src = urls[v.id]
@@ -125,7 +125,6 @@ export default function VideosPage() {
         })}
       </div>
 
-      {/* modal player */}
       {openId && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-5xl rounded shadow-lg overflow-hidden">

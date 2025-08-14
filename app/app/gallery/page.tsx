@@ -4,7 +4,7 @@ import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
 
 type Photo = { id: string; storage_path: string; created_at: string; uploaded_by: string | null }
-type Comment = { id: string; content: string; created_at: string; user_id: string | null }
+type Comment = { id: string; content: string; created_at: string; user_id: string | null; sender_name?: string }
 
 export default function GalleryPage() {
   const supabase = supaClient()
@@ -21,8 +21,9 @@ export default function GalleryPage() {
   const [names, setNames] = useState<Record<string,string>>({})
   const [newComment, setNewComment] = useState('')
 
+  // wielokrotny upload
   const fileRef = useRef<HTMLInputElement | null>(null)
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
 
   useEffect(() => {
@@ -61,7 +62,6 @@ export default function GalleryPage() {
     if (error) { setErr(error.message); return }
     setComments(cs ?? [])
 
-    // podpisy autorów komentarzy
     const ids = Array.from(new Set((cs ?? []).map(c => c.user_id).filter(Boolean))) as string[]
     if (ids.length) {
       const { data: gs } = await supabase.from('guests').select('user_id,full_name').in('user_id', ids)
@@ -74,25 +74,23 @@ export default function GalleryPage() {
   async function addComment() {
     if (!openId || !newComment.trim()) return
 
-    // ustal mój podpis, żeby KOMENTARZ od razu miał imię i nazwisko
     const { data: { user } } = await supabase.auth.getUser()
-    let myId: string | null = null
+    let myId: string | null = user?.id ?? null
     let myName = 'Gość'
-    if (user?.id) {
-      myId = user.id
-      const { data: me } = await supabase.from('guests').select('full_name').eq('user_id', user.id).maybeSingle()
+    if (myId) {
+      const { data: me } = await supabase.from('guests').select('full_name').eq('user_id', myId).maybeSingle()
       if (me?.full_name) myName = me.full_name
     }
 
+    // <<< kluczowa zmiana: zapisujemy user_id w wierszu >>>
     const { data, error } = await supabase
       .from('photo_comments')
-      .insert({ photo_id: openId, content: newComment }) // user_id ustawi DEFAULT auth.uid()
+      .insert({ photo_id: openId, content: newComment, user_id: myId })
       .select('id,content,created_at,user_id')
       .single()
     if (error) { setErr(error.message); return }
 
-    // dopisz nowy komentarz i znany podpis
-    setComments(prev => [...prev, data as Comment])
+    setComments(prev => [...prev, { ...(data as Comment), sender_name: myName }])
     if (myId) setNames(prev => ({ ...prev, [myId!]: myName }))
     setNewComment('')
   }
@@ -104,32 +102,33 @@ export default function GalleryPage() {
     if (!error) setComments(prev => prev.filter(c => c.id !== id))
   }
 
-  function label(u?: string | null) {
-    if (u && names[u]) return names[u]
-    return 'Gość'
+  function label(u?: string | null, s?: string) {
+    return (u && names[u]) || s || 'Gość'
   }
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
-    const f = e.target.files?.[0] ?? null
-    setPendingFile(f)
+    setPendingFiles(Array.from(e.target.files ?? []))
   }
 
   async function uploadPicked() {
-    if (!pendingFile) return
+    if (!pendingFiles.length) return
     if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     setUploading(true)
     try {
-      const path = `${weddingId}/${crypto.randomUUID()}-${pendingFile.name}`
-      const { error: upErr } = await supabase.storage.from('photos').upload(path, pendingFile, { upsert: true })
-      if (upErr) throw upErr
-      const { data, error: insErr } = await supabase
-        .from('photos').insert({ wedding_id: weddingId, storage_path: path })
-        .select('id,storage_path,created_at,uploaded_by').single()
-      if (insErr) throw insErr
-      setPhotos(prev => [data as Photo, ...prev])
-      setUrls(prev => ({ ...prev, [(data as Photo).id]: supabase.storage.from('photos').getPublicUrl(path).data.publicUrl }))
-      setPendingFile(null)
+      for (const f of pendingFiles) {
+        const path = `${weddingId}/${crypto.randomUUID()}-${f.name}`
+        const { error: upErr } = await supabase.storage.from('photos').upload(path, f, { upsert: true })
+        if (upErr) throw upErr
+        const { data, error: insErr } = await supabase
+          .from('photos').insert({ wedding_id: weddingId, storage_path: path })
+          .select('id,storage_path,created_at,uploaded_by').single()
+        if (insErr) throw insErr
+        setPhotos(prev => [data as Photo, ...prev])
+        const url = supabase.storage.from('photos').getPublicUrl(path).data.publicUrl
+        setUrls(prev => ({ ...prev, [(data as Photo).id]: url }))
+      }
+      setPendingFiles([])
       if (fileRef.current) fileRef.current.value = ''
     } catch (e: any) {
       setErr(e?.message || 'Błąd wgrywania')
@@ -152,17 +151,15 @@ export default function GalleryPage() {
 
   return (
     <div className="space-y-4">
-      {/* upload */}
       <div className="flex items-center gap-3">
-        <label className="text-sm font-medium">Dodaj zdjęcie</label>
-        <input ref={fileRef} type="file" accept="image/*" onChange={onPick} />
-        <button className="btn disabled:opacity-50" onClick={uploadPicked} disabled={!pendingFile || uploading}>
-          {uploading ? 'Wgrywam…' : 'Wgraj'}
+        <label className="text-sm font-medium">Dodaj zdjęcia</label>
+        <input ref={fileRef} type="file" accept="image/*" multiple onChange={onPick} />
+        <button className="btn disabled:opacity-50" onClick={uploadPicked} disabled={!pendingFiles.length || uploading}>
+          {uploading ? 'Wgrywam…' : `Wgraj (${pendingFiles.length})`}
         </button>
       </div>
       {err && <p className="text-red-600 text-sm">{err}</p>}
 
-      {/* siatka */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {photos.map(p => {
           const src = urls[p.id]
@@ -179,7 +176,6 @@ export default function GalleryPage() {
         })}
       </div>
 
-      {/* lightbox + komentarze */}
       {openId && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-5xl rounded shadow-lg overflow-hidden grid grid-cols-1 md:grid-cols-5 gap-0">
@@ -195,10 +191,12 @@ export default function GalleryPage() {
               <div className="mt-2 flex-1 overflow-auto space-y-3">
                 {comments.map(c => (
                   <div key={c.id} className="rounded border p-2">
-                    <div className="text-xs text-slate-600 mb-1"><strong>{label(c.user_id)}</strong> • {new Date(c.created_at).toLocaleString()}</div>
+                    <div className="text-xs text-slate-600 mb-1">
+                      <strong>{label(c.user_id, c.sender_name)}</strong> • {new Date(c.created_at).toLocaleString()}
+                    </div>
                     <div>{c.content}</div>
                     {(isOrganizer || (meId && meId === c.user_id)) && (
-                      <button className="text-xs text-red-600 mt-1 underline" onClick={()=>deleteComment(c.id, c.user_id)}>Usuń</button>
+                      <button className="text-xs text-red-600 mt-1 underline" onClick={()=>deleteComment(c.id, c.user_id!)}>Usuń</button>
                     )}
                   </div>
                 ))}
