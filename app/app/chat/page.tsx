@@ -10,16 +10,18 @@ export default function ChatPage() {
   const [weddingId, setWeddingId] = useState<string | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [text, setText] = useState('')
+  const [err, setErr] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     ;(async () => {
       const wid = await getMyWeddingId()
-      if (!wid) return
       setWeddingId(wid)
-      const { data } = await supabase
+      if (!wid) { setErr('Brak powiązania z weselem — dodaj rekord w "guests" dla zalogowanego użytkownika.'); return }
+      const { data, error } = await supabase
         .from('messages').select('id,content,created_at,user_id')
         .eq('wedding_id', wid).order('created_at', { ascending: true })
+      if (error) setErr(error.message)
       setMsgs(data ?? [])
       const channel = supabase.channel('chat')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `wedding_id=eq.${wid}` },
@@ -32,9 +34,11 @@ export default function ChatPage() {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs])
 
   async function send() {
+    setErr(null)
     if (!text.trim() || !weddingId) return
     const { error } = await supabase.from('messages').insert({ wedding_id: weddingId, content: text })
-    if (!error) setText('')
+    if (error) setErr(error.message)
+    else setText('')
   }
 
   return (
@@ -45,8 +49,9 @@ export default function ChatPage() {
       </div>
       <div className="border-t p-2 flex gap-2">
         <input className="flex-1 border rounded p-2" value={text} onChange={e=>setText(e.target.value)} placeholder="Napisz wiadomość..." />
-        <button className="bg-black text-white px-4 rounded" onClick={send}>Wyślij</button>
+        <button className="btn" onClick={send}>Wyślij</button>
       </div>
+      {err && <div className="p-2 text-sm text-red-600">{err}</div>}
     </div>
   )
 }

@@ -6,7 +6,6 @@ import { getMyWeddingId } from '@/lib/getWeddingId'
 import { SeatingPDF } from '@/components/SeatingPDF'
 import { useEffect, useMemo, useState } from 'react'
 
-// ⬇️ PDFDownloadLink tylko w przeglądarce (żeby build na Vercel nie wybuchał)
 const PDFDownloadLink = dynamic(
   () => import('@react-pdf/renderer').then(m => m.PDFDownloadLink),
   { ssr: false }
@@ -23,6 +22,8 @@ export default function TablesPage() {
   const [guests, setGuests] = useState<Guest[]>([])
   const [weddingId, setWeddingId] = useState<string | null>(null)
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [isOrganizer, setIsOrganizer] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     ;(async () => {
@@ -32,32 +33,36 @@ export default function TablesPage() {
       const { data: a } = await supabase.from('table_assignments').select('table_id,guest_id')
       const { data: g } = await supabase.from('guests').select('id,full_name').order('full_name')
       setTables(t ?? []); setAssign(a ?? []); setGuests(g ?? [])
-    })()
+
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: r } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
+        setIsOrganizer(r?.role === 'organizer')
+      }
+    })().catch(e => setErr(String(e)))
   }, [])
 
   const model = useMemo(() => {
     return tables.map(t => ({
       name: t.name,
-      guests: assign
-        .filter(a => a.table_id === t.id)
-        .map(a => guests.find(g => g.id === a.guest_id)?.full_name || '???')
+      guests: assign.filter(a => a.table_id === t.id).map(a => guests.find(g => g.id === a.guest_id)?.full_name || '???')
     }))
   }, [tables, assign, guests])
 
   async function generateAndUpload() {
-    if (!weddingId) return
-    // ⬇️ import funkcji pdf dopiero w momencie użycia (tylko w przeglądarce)
+    setErr(null)
+    if (!isOrganizer) return
+    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     const { pdf } = await import('@react-pdf/renderer')
     const doc = <SeatingPDF tables={model} />
     const blob = await pdf(doc).toBlob()
     const path = `${weddingId}/plan-stolow.pdf`
     const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, {
-      upsert: true,
-      contentType: 'application/pdf',
+      upsert: true, contentType: 'application/pdf'
     })
-    if (upErr) { alert(upErr.message); return }
+    if (upErr) { setErr(upErr.message); return }
     const { data, error } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
-    if (error) { alert(error.message); return }
+    if (error) { setErr(error.message); return }
     setSignedUrl(data.signedUrl)
   }
 
@@ -77,7 +82,6 @@ export default function TablesPage() {
       </div>
 
       <div className="flex flex-wrap gap-3 items-center">
-        {/* ⬇️ Ten komponent wyrenderuje się tylko w przeglądarce (na serwerze jest pomijany) */}
         <PDFDownloadLink
           document={<SeatingPDF tables={model} />}
           fileName="plan-stolow.pdf"
@@ -86,16 +90,17 @@ export default function TablesPage() {
           Pobierz PDF lokalnie
         </PDFDownloadLink>
 
-        <button className="btn" onClick={generateAndUpload}>
-          Zapisz PDF do chmury (Supabase)
-        </button>
+        {isOrganizer ? (
+          <button className="btn" onClick={generateAndUpload}>
+            Zapisz PDF do chmury (Supabase)
+          </button>
+        ) : (
+          <span className="text-sm text-slate-600">Tylko organizator może zapisać PDF do chmury.</span>
+        )}
       </div>
 
-      {signedUrl && (
-        <a href={signedUrl} className="underline block" target="_blank">
-          Pobierz zapisany PDF (link czasowy)
-        </a>
-      )}
+      {signedUrl && <a href={signedUrl} className="underline block" target="_blank">Pobierz zapisany PDF (link czasowy)</a>}
+      {err && <p className="text-red-600 text-sm">{err}</p>}
     </div>
   )
 }

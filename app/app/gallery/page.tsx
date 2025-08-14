@@ -11,12 +11,14 @@ export default function GalleryPage() {
   const [publicUrls, setPublicUrls] = useState<Record<string,string>>({})
   const [uploading, setUploading] = useState(false)
   const [weddingId, setWeddingId] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     ;(async () => {
       const wid = await getMyWeddingId()
       setWeddingId(wid)
-      const { data } = await supabase.from('photos').select('id,storage_path,created_at').order('created_at', { ascending: false })
+      const { data, error } = await supabase.from('photos').select('id,storage_path,created_at').order('created_at', { ascending: false })
+      if (error) setErr(error.message)
       setPhotos(data ?? [])
       const urls: Record<string,string> = {}
       for (const p of data ?? []) {
@@ -27,12 +29,14 @@ export default function GalleryPage() {
   }, [])
 
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    setErr(null)
     const file = e.target.files?.[0]
-    if (!file || !weddingId) return
+    if (!file) return
+    if (!weddingId) { setErr('Nie znaleziono Twojego wesela. Upewnij się, że jesteś przypisany w tabeli guests.'); return }
     setUploading(true)
     const path = `${weddingId}/${crypto.randomUUID()}-${file.name}`
     const { error: upErr } = await supabase.storage.from('photos').upload(path, file, { upsert: true })
-    if (upErr) { alert(upErr.message); setUploading(false); return }
+    if (upErr) { setErr(upErr.message); setUploading(false); return }
     await supabase.from('photos').insert({ wedding_id: weddingId, storage_path: path })
     const url = supabase.storage.from('photos').getPublicUrl(path).data.publicUrl
     setPhotos(p => [{ id: crypto.randomUUID(), storage_path: path, created_at: new Date().toISOString() }, ...p])
@@ -42,13 +46,13 @@ export default function GalleryPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <label className="block text-sm font-medium mb-1">Dodaj zdjęcie</label>
+      <div className="flex items-center gap-3">
+        <label className="text-sm font-medium">Dodaj zdjęcie</label>
         <input type="file" accept="image/*" onChange={onUpload} disabled={uploading || !weddingId}/>
       </div>
+      {err && <p className="text-red-600 text-sm">{err}</p>}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {photos.map(p => {
-          const key = publicUrls[p.id] ? p.id : p.storage_path
           const src = publicUrls[p.id] || publicUrls[p.storage_path]
           return (
             <a key={p.id} href={src} target="_blank" className="block border rounded overflow-hidden">
