@@ -1,42 +1,28 @@
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
 
-type Photo = {
-  id: string
-  storage_path: string
-  created_at: string
-  uploaded_by: string | null
-}
-type Comment = {
-  id: string
-  photo_id: string
-  user_id: string | null
-  content: string
-  created_at: string
-}
+type Photo = { id: string; storage_path: string; created_at: string; uploaded_by: string | null }
+type Comment = { id: string; content: string; created_at: string; user_id: string | null }
 
 export default function GalleryPage() {
   const supabase = supaClient()
-
   const [weddingId, setWeddingId] = useState<string | null>(null)
-  const [myId, setMyId] = useState<string | null>(null)
-  const [isOrganizer, setIsOrganizer] = useState(false)
-
   const [photos, setPhotos] = useState<Photo[]>([])
-  const [publicUrls, setPublicUrls] = useState<Record<string, string>>({})
-  const [nameByUserId, setNameByUserId] = useState<Record<string, string>>({})
-
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [uploading, setUploading] = useState(false)
+  const [urls, setUrls] = useState<Record<string,string>>({})
   const [err, setErr] = useState<string | null>(null)
+  const [isOrganizer, setIsOrganizer] = useState(false)
+  const [meId, setMeId] = useState<string | null>(null)
 
-  // Lightbox / komentarze
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const activePhoto = useMemo(() => photos.find(p => p.id === activeId) || null, [photos, activeId])
+  // modal
+  const [openId, setOpenId] = useState<string | null>(null)
   const [comments, setComments] = useState<Comment[]>([])
+  const [names, setNames] = useState<Record<string,string>>({})
   const [newComment, setNewComment] = useState('')
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -44,68 +30,92 @@ export default function GalleryPage() {
       setWeddingId(wid)
 
       const { data: { user } } = await supabase.auth.getUser()
-      setMyId(user?.id ?? null)
+      setMeId(user?.id ?? null)
 
-      if (user?.id) {
-        const { data: me } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
-        setIsOrganizer(me?.role === 'organizer')
+      if (user) {
+        const { data: r } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
+        setIsOrganizer(r?.role === 'organizer')
       }
 
-      await refresh(wid)
+      const { data } = await supabase.from('photos')
+        .select('id,storage_path,created_at,uploaded_by')
+        .order('created_at', { ascending: false })
+      setPhotos(data ?? [])
+
+      const links: Record<string,string> = {}
+      for (const p of data ?? []) {
+        links[p.id] = supabase.storage.from('photos').getPublicUrl(p.storage_path).data.publicUrl
+      }
+      setUrls(links)
     })().catch(e => setErr(String(e)))
   }, [])
 
-  async function refresh(wid: string | null) {
-    if (!wid) return
-    setErr(null)
-
-    const { data, error } = await supabase
-      .from('photos')
-      .select('id,storage_path,created_at,uploaded_by')
-      .eq('wedding_id', wid)
-      .order('created_at', { ascending: false })
-
+  async function openModal(photoId: string) {
+    setOpenId(photoId); setErr(null)
+    const { data: cs, error } = await supabase
+      .from('photo_comments')
+      .select('id,content,created_at,user_id')
+      .eq('photo_id', photoId)
+      .order('created_at', { ascending: true })
     if (error) { setErr(error.message); return }
+    setComments(cs ?? [])
 
-    setPhotos(data ?? [])
-
-    // URL-e
-    const urls: Record<string, string> = {}
-    for (const p of data ?? []) {
-      urls[p.id] = supabase.storage.from('photos').getPublicUrl(p.storage_path).data.publicUrl
-    }
-    setPublicUrls(urls)
-
-    // mapka user_id -> full_name
-    const ids = Array.from(new Set((data ?? []).map(p => p.uploaded_by).filter(Boolean))) as string[]
+    // podpisy autorów komentarzy
+    const ids = Array.from(new Set((cs ?? []).map(c => c.user_id).filter(Boolean))) as string[]
     if (ids.length) {
-      const { data: gs } = await supabase
-        .from('guests')
-        .select('user_id,full_name')
-        .in('user_id', ids)
-      const m: Record<string, string> = {}
-      for (const g of gs ?? []) m[g.user_id] = g.full_name
-      setNameByUserId(m)
-    } else {
-      setNameByUserId({})
+      const { data: gs } = await supabase.from('guests').select('user_id,full_name').in('user_id', ids)
+      const map: Record<string,string> = {}
+      for (const g of gs ?? []) map[g.user_id] = g.full_name
+      setNames(map)
     }
   }
 
-  async function uploadSelected() {
+  async function addComment() {
+    if (!openId || !newComment.trim()) return
+    const { data, error } = await supabase
+      .from('photo_comments')
+      .insert({ photo_id: openId, content: newComment })
+      .select('id,content,created_at,user_id')
+      .single()
+    if (error) { setErr(error.message); return }
+    setComments(prev => [...prev, data as Comment])
+    setNewComment('')
+  }
+
+  async function deleteComment(id: string, userId: string | null) {
+    const can = isOrganizer || (!!meId && meId === userId)
+    if (!can) return
+    const { error } = await supabase.from('photo_comments').delete().eq('id', id)
+    if (!error) setComments(prev => prev.filter(c => c.id !== id))
+  }
+
+  function label(u?: string | null) {
+    if (u && names[u]) return names[u]
+    return 'Gość'
+  }
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
-    if (!selectedFile) return
+    const f = e.target.files?.[0] ?? null
+    setPendingFile(f)
+  }
+
+  async function uploadPicked() {
+    if (!pendingFile) return
     if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     setUploading(true)
     try {
-      const path = `${weddingId}/${crypto.randomUUID()}-${selectedFile.name}`
-      const { error: upErr } = await supabase.storage.from('photos').upload(path, selectedFile, { upsert: true })
+      const path = `${weddingId}/${crypto.randomUUID()}-${pendingFile.name}`
+      const { error: upErr } = await supabase.storage.from('photos').upload(path, pendingFile, { upsert: true })
       if (upErr) throw upErr
-      const { error: insErr } = await supabase
-        .from('photos')
-        .insert({ wedding_id: weddingId, storage_path: path, uploaded_by: myId })
+      const { data, error: insErr } = await supabase
+        .from('photos').insert({ wedding_id: weddingId, storage_path: path })
+        .select('id,storage_path,created_at,uploaded_by').single()
       if (insErr) throw insErr
-      setSelectedFile(null)
-      await refresh(weddingId)
+      setPhotos(prev => [data as Photo, ...prev])
+      setUrls(prev => ({ ...prev, [(data as Photo).id]: supabase.storage.from('photos').getPublicUrl(path).data.publicUrl }))
+      setPendingFile(null)
+      if (fileRef.current) fileRef.current.value = ''
     } catch (e: any) {
       setErr(e?.message || 'Błąd wgrywania')
     } finally {
@@ -113,133 +123,75 @@ export default function GalleryPage() {
     }
   }
 
-  async function deletePhoto(p: Photo) {
-    if (!confirm('Usunąć zdjęcie?')) return
-    setErr(null)
-    // Uprawnienia egzekwują polityki – w UI pokażemy przycisk tylko uprawnionym
-    const { error: d1 } = await supabase.from('photos').delete().eq('id', p.id)
-    if (d1) { setErr(d1.message); return }
-    await supabase.storage.from('photos').remove([p.storage_path]).catch(() => {})
-    await refresh(weddingId)
-    if (activeId === p.id) setActiveId(null)
-  }
-
-  // --- komentarze ---
-
-  async function loadComments(photoId: string) {
-    setComments([])
-    const { data, error } = await supabase
-      .from('photo_comments')
-      .select('id,photo_id,user_id,content,created_at')
-      .eq('photo_id', photoId)
-      .order('created_at', { ascending: true })
-    if (!error) setComments(data ?? [])
-  }
-
-  async function addComment() {
-    if (!newComment.trim() || !activeId) return
-    const { error } = await supabase
-      .from('photo_comments')
-      .insert({ photo_id: activeId, content: newComment })
-    if (error) { alert(error.message); return }
-    setNewComment('')
-    await loadComments(activeId)
-  }
-
-  async function deleteComment(id: string) {
-    const { error } = await supabase.from('photo_comments').delete().eq('id', id)
-    if (error) { alert(error.message); return }
-    if (activeId) await loadComments(activeId)
+  async function removePhoto(p: Photo) {
+    if (!isOrganizer && (!meId || meId !== p.uploaded_by)) return
+    const res = await fetch('/api/admin/delete-photo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photoId: p.id })
+    })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) { setErr(j.error || 'Nie udało się usunąć zdjęcia'); return }
+    setPhotos(prev => prev.filter(x => x.id !== p.id))
+    if (openId === p.id) setOpenId(null)
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-4">
+      {/* upload */}
+      <div className="flex items-center gap-3">
         <label className="text-sm font-medium">Dodaj zdjęcie</label>
-        <input type="file" accept="image/*" onChange={e => setSelectedFile(e.target.files?.[0] || null)} />
-        <button className="btn disabled:opacity-50" onClick={uploadSelected} disabled={!selectedFile || uploading}>
-          {uploading ? 'Wgrywam…' : 'Dodaj'}
+        <input ref={fileRef} type="file" accept="image/*" onChange={onPick} />
+        <button className="btn disabled:opacity-50" onClick={uploadPicked} disabled={!pendingFile || uploading}>
+          {uploading ? 'Wgrywam…' : 'Wgraj'}
         </button>
-        {err && <span className="text-sm text-red-600">{err}</span>}
       </div>
+      {err && <p className="text-red-600 text-sm">{err}</p>}
 
+      {/* siatka */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {photos.map(p => {
-          const src = publicUrls[p.id]
-          const by = p.uploaded_by ? (nameByUserId[p.uploaded_by] || 'Gość') : 'Gość'
-          const canDelete = isOrganizer || (!!myId && myId === p.uploaded_by)
+          const src = urls[p.id]
           return (
-            <div key={p.id} className="border rounded overflow-hidden">
+            <div key={p.id} className="relative group border rounded overflow-hidden">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={src}
-                alt=""
-                className="w-full h-40 object-cover cursor-pointer"
-                onClick={() => { setActiveId(p.id); loadComments(p.id) }}
-              />
-              <div className="p-2 flex items-center justify-between text-sm">
-                <span className="text-slate-600 truncate">Autor: {by}</span>
-                {canDelete && (
-                  <button className="text-red-600 hover:underline" onClick={() => deletePhoto(p)}>
-                    Usuń
-                  </button>
-                )}
-              </div>
+              <img src={src} alt="" className="w-full h-40 object-cover cursor-pointer" onClick={()=>openModal(p.id)} />
+              {(isOrganizer || (meId && meId === p.uploaded_by)) && (
+                <button onClick={()=>removePhoto(p)}
+                        className="absolute top-2 right-2 hidden group-hover:block bg-white/80 px-2 py-1 rounded text-sm">Usuń</button>
+              )}
             </div>
           )
         })}
       </div>
 
-      {/* LIGHTBOX + komentarze */}
-      {activePhoto && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-4xl w-full overflow-hidden">
-            <div className="flex items-center justify-between p-3 border-b">
-              <div className="text-sm">
-                <strong>{activePhoto.uploaded_by ? (nameByUserId[activePhoto.uploaded_by] || 'Gość') : 'Gość'}</strong>
-                <span className="text-slate-600"> • {new Date(activePhoto.created_at).toLocaleString()}</span>
-              </div>
-              <button className="nav-link" onClick={() => setActiveId(null)}>Zamknij</button>
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-0">
+      {/* lightbox + komentarze */}
+      {openId && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-5xl rounded shadow-lg overflow-hidden grid grid-cols-1 md:grid-cols-5 gap-0">
+            <div className="md:col-span-3 p-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={publicUrls[activePhoto.id]}
-                alt=""
-                className="md:col-span-2 w-full h-[60vh] object-contain bg-black"
-              />
-
-              <div className="p-3 flex flex-col gap-3">
+              <img src={urls[openId]} alt="" className="w-full max-h-[75vh] object-contain" />
+            </div>
+            <div className="md:col-span-2 border-l p-3 flex flex-col">
+              <div className="flex items-center justify-between">
                 <h3 className="font-semibold">Komentarze</h3>
-                <div className="space-y-2 max-h-[48vh] overflow-auto pr-1">
-                  {comments.map(c => (
-                    <div key={c.id} className="rounded border p-2">
-                      <div className="text-xs text-slate-600 mb-1">
-                        <strong>{c.user_id ? (nameByUserId[c.user_id] || 'Gość') : 'Gość'}</strong>
-                        <span> • {new Date(c.created_at).toLocaleString()}</span>
-                      </div>
-                      <div className="whitespace-pre-wrap">{c.content}</div>
-                      {(isOrganizer || (myId && myId === c.user_id)) && (
-                        <button className="text-xs text-red-600 mt-1 hover:underline"
-                                onClick={() => deleteComment(c.id)}>
-                          Usuń
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {comments.length === 0 && <div className="text-sm text-slate-500">Brak komentarzy.</div>}
-                </div>
-
-                <div className="flex gap-2 mt-auto">
-                  <input
-                    className="flex-1 border rounded p-2"
-                    placeholder="Dodaj komentarz…"
-                    value={newComment}
-                    onChange={e => setNewComment(e.target.value)}
-                  />
-                  <button className="btn" onClick={addComment}>Dodaj</button>
-                </div>
+                <button className="text-sm underline" onClick={()=>setOpenId(null)}>Zamknij</button>
+              </div>
+              <div className="mt-2 flex-1 overflow-auto space-y-3">
+                {comments.map(c => (
+                  <div key={c.id} className="rounded border p-2">
+                    <div className="text-xs text-slate-600 mb-1"><strong>{label(c.user_id)}</strong> • {new Date(c.created_at).toLocaleString()}</div>
+                    <div>{c.content}</div>
+                    {(isOrganizer || (meId && meId === c.user_id)) && (
+                      <button className="text-xs text-red-600 mt-1 underline" onClick={()=>deleteComment(c.id, c.user_id)}>Usuń</button>
+                    )}
+                  </div>
+                ))}
+                {!comments.length && <div className="text-sm text-slate-500">Brak komentarzy.</div>}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <input className="flex-1 border rounded p-2" placeholder="Dodaj komentarz..." value={newComment} onChange={e=>setNewComment(e.target.value)} />
+                <button className="btn" onClick={addComment}>Dodaj</button>
               </div>
             </div>
           </div>

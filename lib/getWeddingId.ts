@@ -1,4 +1,3 @@
-// lib/getWeddingId.ts
 import { supaClient } from './supabaseClient'
 
 export async function getMyWeddingId(): Promise<string | null> {
@@ -9,6 +8,7 @@ export async function getMyWeddingId(): Promise<string | null> {
     .from('guests')
     .select('wedding_id')
     .eq('user_id', user.id)
+    .eq('is_active', true)   // ← nowość
     .limit(1)
     .maybeSingle()
   return data?.wedding_id ?? null

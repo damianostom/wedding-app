@@ -4,8 +4,8 @@ import type { Metadata } from 'next'
 import AuthButtons from '@/components/AuthButtons'
 
 export const metadata: Metadata = {
-  title: 'Wesele',
-  description: 'Aplikacja weselna – Next.js + Supabase',
+  title: 'Wesele Agaty i Damiana',
+  description: 'Aplikacja weselna – Agatki i Damiana',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -25,7 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <main className="mx-auto max-w-5xl px-4 py-6">{children}</main>
 
         <footer className="mx-auto max-w-5xl px-4 py-8 text-center text-xs text-slate-500">
-          © {new Date().getFullYear()} Aplikacja Weselna • Supabase + Next.js
+          © {new Date().getFullYear()} Aplikacja Weselna • Agata i Damian Tomczyk
         </footer>
       </body>
     </html>
