@@ -1,6 +1,20 @@
-import Link from "next/link"
+'use client'
+
+import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import { supaClient } from '@/lib/supabaseClient'
 
 export default function Home() {
+  const supabase = supaClient()
+  const [authed, setAuthed] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    ;(async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      setAuthed(!!session)
+    })()
+  }, [])
+
   return (
     <div className="space-y-10">
       {/* HERO */}
@@ -15,7 +29,7 @@ export default function Home() {
             Zaloguj się, aby zobaczyć najważniejsze informacje, galerię zdjęć, czat gości oraz plan stołów w PDF.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
-            <Link href="/login" className="btn no-underline">Zaloguj się</Link>
+            {!authed && <Link href="/login" className="btn no-underline">Zaloguj się</Link>}
             <Link href="/app" className="btn-ghost no-underline">Przejdź do panelu</Link>
           </div>
         </div>
