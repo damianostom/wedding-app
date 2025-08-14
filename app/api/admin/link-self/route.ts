@@ -1,3 +1,4 @@
+// app/api/admin/link-self/route.ts
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
@@ -8,44 +9,40 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request) {
   try {
-    const { weddingId, fullName } = await req.json() as { weddingId?: string; fullName?: string }
-    if (!weddingId) return NextResponse.json({ error: 'Podaj weddingId' }, { status: 400 })
+    const { weddingId, fullName } = (await req.json()) as { weddingId?: string; fullName?: string }
+    if (!weddingId || !fullName) {
+      return NextResponse.json({ error: 'Podaj weddingId i fullName.' }, { status: 400 })
+    }
 
     const browser = createRouteHandlerClient({ cookies })
     const { data: { user } } = await browser.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Brak sesji' }, { status: 401 })
+    if (!user) return NextResponse.json({ error: 'Brak sesji.' }, { status: 401 })
 
-    // admin client (service role) – omija RLS
     const admin = getSupabaseAdmin()
 
-    // znajdź istniejącego organizatora dla tego wesela
-    const { data: existing, error } = await admin
+    // czy istnieje rekord dla tego wesela z tym userem?
+    const { data: exists } = await admin
       .from('guests')
-      .select('id,full_name,role,user_id')
+      .select('id')
+      .eq('user_id', user.id)
       .eq('wedding_id', weddingId)
-      .eq('role','organizer')
       .maybeSingle()
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
-    if (existing) {
+    if (exists?.id) {
       const upd = await admin
         .from('guests')
-        .update({ user_id: user.id, full_name: fullName ?? existing.full_name })
-        .eq('id', existing.id)
-        .select('id')
-        .single()
+        .update({ full_name: fullName, role: 'organizer' })
+        .eq('id', exists.id)
       if (upd.error) return NextResponse.json({ error: upd.error.message }, { status: 400 })
-      return NextResponse.json({ ok: true, linkedId: existing.id })
     } else {
-      // jeśli nie było – utwórz organizatora
+      // wstaw nowy rekord (jako organizer)
       const ins = await admin
         .from('guests')
-        .insert({ wedding_id: weddingId, user_id: user.id, full_name: fullName ?? 'Organizer', role: 'organizer' })
-        .select('id')
-        .single()
+        .insert({ wedding_id: weddingId, user_id: user.id, full_name: fullName, role: 'organizer' })
       if (ins.error) return NextResponse.json({ error: ins.error.message }, { status: 400 })
-      return NextResponse.json({ ok: true, linkedId: ins.data.id })
     }
+
+    return NextResponse.json({ ok: true })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'Unknown error' }, { status: 500 })
   }
