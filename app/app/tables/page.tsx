@@ -11,9 +11,9 @@ const PDFDownloadLink = dynamic(
   { ssr: false }
 )
 
-type Table   = { id: string; name: string }
-type Assigned= { table_id: string; guest_id: string }
-type Guest   = { id: string; full_name: string }
+type Table = { id: string; name: string }
+type Assigned = { table_id: string; guest_id: string }
+type Guest = { id: string; full_name: string }
 
 type PlanLink = { path: string; url: string }
 
@@ -25,13 +25,11 @@ export default function TablesPage() {
   const [weddingId, setWeddingId] = useState<string | null>(null)
 
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
-  const [currentPlans, setCurrentPlans] = useState<PlanLink[]>([])   // publikowane (A/B + fallback)
-  const [allFiles, setAllFiles] = useState<string[]>([])             // wszystko w folderze wesela (dla admina)
-
-  const [slot, setSlot] = useState<'A' | 'B'>('A')                   // gdzie zapisać: Plan A / Plan B
+  const [files, setFiles] = useState<PlanLink[]>([])  // ← wszystkie pliki w folderze
   const [isOrganizer, setIsOrganizer] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [picked, setPicked] = useState<File | null>(null) // ← wybrany plik, czeka na „Wgraj”
 
   useEffect(() => {
     ;(async () => {
@@ -49,11 +47,8 @@ export default function TablesPage() {
         setIsOrganizer(r?.role === 'organizer')
       }
 
-      if (wid) {
-        await loadCurrentPlanLinks(wid)
-        await refreshAllFiles(wid)
-      }
-    })().catch((e) => setErr(String(e)))
+      if (wid) await refreshList(wid)
+    })().catch((e)=>setErr(String(e)))
   }, [])
 
   const model = useMemo(() => {
@@ -65,124 +60,95 @@ export default function TablesPage() {
     }))
   }, [tables, assign, guests])
 
-  async function refreshAllFiles(wid: string) {
-    const { data: list } = await supabase.storage.from('pdf').list(wid, { limit: 100 })
-    setAllFiles((list ?? []).map(o => `${wid}/${o.name}`))
+  /** wczytaj WSZYSTKIE pliki z folderu wesela */
+  async function refreshList(wid: string) {
+    const { data: list, error } = await supabase.storage.from('pdf').list(wid, { limit: 100 })
+    if (error) { setErr(error.message); return }
+    const out: PlanLink[] = []
+    for (const obj of list ?? []) {
+      const path = `${wid}/${obj.name}`
+      const { data: s } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+      if (s?.signedUrl) out.push({ path, url: s.signedUrl })
+    }
+    // sort: najnowsze pliki wyżej
+    out.sort((a, b) => a.path.localeCompare(b.path)).reverse()
+    setFiles(out)
   }
 
-  async function loadCurrentPlanLinks(wid: string) {
-    // Priorytet: Plan A, potem Plan B (różne rozszerzenia)
-    const A = [`${wid}/plan-stolow-A.pdf`, `${wid}/plan-stolow-A.png`, `${wid}/plan-stolow-A.jpg`, `${wid}/plan-stolow-A.jpeg`]
-    const B = [`${wid}/plan-stolow-B.pdf`, `${wid}/plan-stolow-B.png`, `${wid}/plan-stolow-B.jpg`, `${wid}/plan-stolow-B.jpeg`]
-    const fallback = [
-      `${wid}/plan-stolow-custom.pdf`,
-      `${wid}/plan-stolow.pdf`,
-      `${wid}/plan-stolow.png`,
-      `${wid}/plan-stolow.jpg`,
-      `${wid}/plan-stolow.jpeg`,
-    ]
-
-    const found: PlanLink[] = []
-    for (const p of [...A, ...B, ...fallback]) {
-      const { data } = await supabase.storage.from('pdf').createSignedUrl(p, 60 * 10)
-      if (data?.signedUrl) found.push({ path: p, url: data.signedUrl })
-    }
-    // usuń duplikaty tej samej bazowej nazwy (gdy istnieje kilka rozszerzeń)
-    const dedup: PlanLink[] = []
-    const seen = new Set<string>()
-    for (const f of found) {
-      const key = f.path.replace(/\.(pdf|png|jpe?g)$/i, '')
-      if (!seen.has(key)) { dedup.push(f); seen.add(key) }
-    }
-    setCurrentPlans(dedup.slice(0, 2)) // pokazuj max 2 (A i B, jeśli są)
-  }
-
+  /** generuj PDF na podstawie danych z bazy */
   async function generateAndUpload() {
     setErr(null)
-    if (!isOrganizer) return
-    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
-
+    if (!isOrganizer || !weddingId) return
     const { pdf } = await import('@react-pdf/renderer')
     const doc = <SeatingPDF tables={model} />
     const blob = await pdf(doc).toBlob()
+    const path = `${weddingId}/plan-stolow.pdf`
 
-    const path = `${weddingId}/plan-stolow-${slot}.pdf`
     const { error: upErr } = await supabase.storage.from('pdf').upload(path, blob, {
-      upsert: true, contentType: 'application/pdf',
+      upsert: true,
+      contentType: 'application/pdf',
     })
     if (upErr) { setErr(upErr.message); return }
 
-    const { data, error } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
-    if (error || !data) { setErr(error?.message || 'Nie udało się utworzyć linku.'); return }
-
-    setSignedUrl(data.signedUrl)
-    await loadCurrentPlanLinks(weddingId)
-    await refreshAllFiles(weddingId)
+    const { data } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+    setSignedUrl(data?.signedUrl || null)
+    await refreshList(weddingId)
   }
 
-  async function uploadOwn(e: React.ChangeEvent<HTMLInputElement>) {
+  /** wybór pliku -> tylko zapamiętuję */
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!isOrganizer) { setErr('Tylko organizator może wgrywać pliki.'); return }
-    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
+    setPicked(e.target.files?.[0] ?? null)
+  }
 
+  /** „Wgraj” kliknięte – upload wybranego pliku */
+  async function uploadPicked() {
+    if (!picked) return
+    if (!weddingId) { setErr('Brak powiązania z weselem.'); return }
     setUploading(true)
     try {
-      const ext = (file.name.split('.').pop() || 'pdf').toLowerCase()
-      const path = `${weddingId}/plan-stolow-${slot}.${ext}`
-
-      const { error: upErr } = await supabase.storage.from('pdf').upload(path, file, {
+      const ext = (picked.name.split('.').pop() || 'pdf').toLowerCase()
+      const path = `${weddingId}/plan-stolow-custom.${ext}`
+      const { error: upErr } = await supabase.storage.from('pdf').upload(path, picked, {
         upsert: true,
-        contentType: file.type || (ext === 'pdf' ? 'application/pdf' : undefined),
+        contentType: picked.type || (ext === 'pdf' ? 'application/pdf' : undefined),
       })
       if (upErr) throw upErr
-
-      const { data, error: sErr } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
-      if (sErr || !data) throw new Error(sErr?.message || 'Nie udało się utworzyć linku.')
-      setSignedUrl(data.signedUrl)
-      await loadCurrentPlanLinks(weddingId)
-      await refreshAllFiles(weddingId)
-    } catch (e: any) {
+      const { data } = await supabase.storage.from('pdf').createSignedUrl(path, 60 * 10)
+      setSignedUrl(data?.signedUrl || null)
+      setPicked(null)
+      await refreshList(weddingId)
+    } catch (e:any) {
       setErr(e?.message || 'Błąd wgrywania')
     } finally {
       setUploading(false)
-      e.currentTarget.value = ''
     }
   }
 
-  async function deletePlan(path: string) {
-    if (!confirm(`Usunąć plik: ${path.split('/').pop()} ?`)) return
-    const res = await fetch('/api/admin/delete-plan', {
+  async function removePlan(path: string) {
+    if (!isOrganizer || !weddingId) return
+    if (!confirm(`Usunąć plik\n${path.split('/').pop()} ?`)) return
+    const res = await fetch('/api/admin/delete-plan-file', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type':'application/json' },
       body: JSON.stringify({ path })
     })
-    const j = await res.json().catch(() => ({}))
-    if (!res.ok) { alert(j.error || 'Nie udało się usunąć pliku'); return }
-    if (weddingId) {
-      await loadCurrentPlanLinks(weddingId)
-      await refreshAllFiles(weddingId)
-    }
+    const j = await res.json().catch(()=>({}))
+    if (!res.ok) { setErr(j.error || 'Nie udało się usunąć pliku'); return }
+    await refreshList(weddingId)
   }
 
+  /** widok dla gości – lista linków do wszystkich plików */
   function CurrentPlanView() {
-    if (!currentPlans.length) {
-      return <p className="text-slate-600">Brak opublikowanego planu stołów.</p>
-    }
+    if (!files.length) return <p className="text-slate-600">Brak opublikowanych plików.</p>
     return (
-      <div className="space-y-2">
-        <div className="text-sm text-slate-600">Wybierz plan do podglądu/pobrania:</div>
-        <ul className="list-disc ml-5">
-          {currentPlans.map((p) => (
-            <li key={p.path}>
-              <a className="underline" href={p.url} target="_blank">
-                {p.path.includes('-A.') ? 'Plan A' : p.path.includes('-B.') ? 'Plan B' : p.path.split('/').pop()}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </div>
+      <ul className="list-disc ml-5 space-y-1">
+        {files.map(f => (
+          <li key={f.path}>
+            <a className="underline" href={f.url} target="_blank">{f.path.split('/').pop()}</a>
+          </li>
+        ))}
+      </ul>
     )
   }
 
@@ -190,18 +156,16 @@ export default function TablesPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Plan stołów</h1>
 
-      {/* Sekcja widoczna dla wszystkich */}
       <div className="card">
         <div className="card-pad">
-          <h2 className="text-lg font-semibold mb-2">Aktualny plan</h2>
+          <h2 className="text-lg font-semibold mb-2">Pliki dostępne dla gości</h2>
           <CurrentPlanView />
         </div>
       </div>
 
-      {/* Panel organizatora */}
       {isOrganizer && (
         <>
-          {/* Podgląd układu z bazy (dla generatora PDF) */}
+          {/* Podgląd układu z bazy */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {model.map((t, i) => (
               <div key={i} className="border rounded p-3 bg-white">
@@ -214,71 +178,46 @@ export default function TablesPage() {
           </div>
 
           {/* Akcje organizatora */}
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-4">
-              <PDFDownloadLink
-                document={<SeatingPDF tables={model} />}
-                fileName="plan-stolow.pdf"
-                className="underline"
-              >
-                Pobierz PDF lokalnie
-              </PDFDownloadLink>
+          <div className="flex flex-wrap items-center gap-4">
+            <PDFDownloadLink
+              document={<SeatingPDF tables={model} />}
+              fileName="plan-stolow.pdf"
+              className="underline"
+            >
+              Pobierz PDF lokalnie
+            </PDFDownloadLink>
 
-              <div className="inline-flex items-center gap-3">
-                <span className="text-sm text-slate-600">Zapisz jako:</span>
-                <label className="inline-flex items-center gap-1 text-sm">
-                  <input type="radio" checked={slot === 'A'} onChange={() => setSlot('A')} />
-                  Plan A
-                </label>
-                <label className="inline-flex items-center gap-1 text-sm">
-                  <input type="radio" checked={slot === 'B'} onChange={() => setSlot('B')} />
-                  Plan B
-                </label>
-              </div>
+            <button className="btn" onClick={generateAndUpload}>
+              Zapisz PDF do chmury (Supabase)
+            </button>
 
-              <button className="btn" onClick={generateAndUpload}>
-                Zapisz PDF do chmury (Supabase)
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 text-sm">lub wgraj własny plik:</span>
+              <input type="file" accept="application/pdf,image/*" onChange={onPick} />
+              <button className="btn disabled:opacity-50" onClick={uploadPicked} disabled={!picked || uploading}>
+                {uploading ? 'Wgrywam…' : 'Wgraj'}
               </button>
-
-              <label className="inline-flex items-center gap-2 text-sm">
-                <span className="text-slate-600">lub wgraj własny plik:</span>
-                <input
-                  type="file"
-                  accept="application/pdf,image/*"
-                  onChange={uploadOwn}
-                  disabled={uploading}
-                />
-              </label>
-            </div>
-
-            {signedUrl && (
-              <a href={signedUrl} className="underline block" target="_blank">
-                Pobierz zapisany plik (link czasowy)
-              </a>
-            )}
-          </div>
-
-          {/* Lista wszystkich plików w folderze wesela (kasowanie) */}
-          <div className="card">
-            <div className="card-pad">
-              <h3 className="font-semibold mb-2">Pliki w chmurze (folder PDF)</h3>
-              {!allFiles.length ? (
-                <div className="text-sm text-slate-600">Brak plików.</div>
-              ) : (
-                <ul className="divide-y">
-                  {allFiles.map(p => (
-                    <li key={p} className="py-2 flex items-center justify-between gap-3">
-                      <span className="truncate">{p.split('/').pop()}</span>
-                      <div className="flex items-center gap-2">
-                        <a className="underline text-sm" href={(supabase.storage.from('pdf').getPublicUrl(p).data.publicUrl)} target="_blank">Podgląd</a>
-                        <button className="btn" onClick={() => deletePlan(p)}>Usuń</button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           </div>
+
+          {/* lista z przyciskiem Usuń */}
+          {!!files.length && (
+            <div>
+              <h3 className="mt-4 font-semibold">Twoje pliki w chmurze:</h3>
+              <ul className="divide-y">
+                {files.map(f => (
+                  <li key={f.path} className="py-2 flex items-center justify-between gap-2">
+                    <a className="underline" href={f.url} target="_blank">{f.path.split('/').pop()}</a>
+                    <button className="btn" onClick={()=>removePlan(f.path)}>Usuń</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {signedUrl && (
+            <a href={signedUrl} className="underline block" target="_blank">Pobierz zapisany plik (link czasowy)</a>
+          )}
         </>
       )}
 
