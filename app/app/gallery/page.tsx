@@ -1,104 +1,145 @@
 'use client'
+import { useEffect, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
-import { useEffect, useRef, useState } from 'react'
-import type { RealtimeChannel } from '@supabase/supabase-js'
 
-type Msg = { id: number | string; content: string; created_at: string; user_id: string | null }
+type Photo = {
+  id: string
+  storage_path: string
+  created_at: string
+  uploaded_by: string | null
+}
 
-export default function ChatPage() {
+export default function GalleryPage() {
   const supabase = supaClient()
-  const [weddingId, setWeddingId] = useState<string | null>(null)
-  const [msgs, setMsgs] = useState<Msg[]>([])
-  const [text, setText] = useState('')
+  const [wid, setWid] = useState<string | null>(null)
+  const [isOrganizer, setIsOrganizer] = useState(false)
+  const [photos, setPhotos] = useState<Photo[]>([])
+  const [urls, setUrls] = useState<Record<string, string>>({})
+  const [names, setNames] = useState<Record<string, string>>({})
+  const [uploading, setUploading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [nameByUserId, setNameByUserId] = useState<Record<string,string>>({})
-  const [myId, setMyId] = useState<string | null>(null)
-  const channelRef = useRef<RealtimeChannel | null>(null)
-  const seen = useRef(new Set<string>())
 
   useEffect(() => {
     ;(async () => {
-      const wid = await getMyWeddingId()
-      setWeddingId(wid)
+      const myWid = await getMyWeddingId()
+      setWid(myWid)
 
+      // rola
       const { data: { user } } = await supabase.auth.getUser()
-      setMyId(user?.id ?? null)
-
-      // mapa podpisów
-      if (wid) {
-        const { data: gs } = await supabase
-          .from('guests').select('user_id,full_name').eq('wedding_id', wid)
-        const map: Record<string,string> = {}
-        for (const g of gs ?? []) if (g.user_id) map[g.user_id] = g.full_name
-        setNameByUserId(map)
+      if (user) {
+        const { data: me } = await supabase.from('guests')
+          .select('role').eq('user_id', user.id).maybeSingle()
+        setIsOrganizer(me?.role === 'organizer')
       }
 
-      // historia
-      const { data, error } = await supabase
-        .from('messages')
-        .select('id,content,created_at,user_id')
-        .eq('wedding_id', wid)
-        .order('created_at', { ascending: true })
-      if (error) setErr(error.message)
-      for (const m of data ?? []) seen.current.add(`${m.id}|${m.created_at}`)
-      setMsgs(data ?? [])
+      // lista zdjęć
+      const { data } = await supabase
+        .from('photos')
+        .select('id, storage_path, created_at, uploaded_by')
+        .eq('wedding_id', myWid)
+        .order('created_at', { ascending: false })
+      const rows = data ?? []
+      setPhotos(rows)
 
-      // broadcast + (opcjonalnie) postgres_changes
-      const ch = supabase.channel(`chat:${wid}`, { config: { broadcast: { ack: true } } })
-      ch.on('broadcast', { event: 'new-message' }, payload => {
-        const m = payload.payload as Msg
-        const key = `${m.id}|${m.created_at}`; if (seen.current.has(key)) return
-        seen.current.add(key); setMsgs(prev => [...prev, m])
-      })
-      ch.on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `wedding_id=eq.${wid}` },
-        (payload: any) => {
-          const m = payload.new as Msg
-          const key = `${m.id}|${m.created_at}`; if (seen.current.has(key)) return
-          seen.current.add(key); setMsgs(prev => [...prev, m])
+      // mapka user_id → full_name
+      const uploaderIds = Array.from(new Set(rows.map(r => r.uploaded_by).filter(Boolean))) as string[]
+      if (uploaderIds.length) {
+        const { data: gs } = await supabase
+          .from('guests').select('user_id, full_name').in('user_id', uploaderIds)
+        const map: Record<string, string> = {}
+        for (const g of gs ?? []) map[g.user_id] = g.full_name
+        setNames(map)
+      }
+
+      // publiczne/sygnowane URL-e
+      const u: Record<string, string> = {}
+      for (const p of rows) {
+        // jeśli bucket `photos` jest "public", użyjemy publicUrl:
+        const pub = supabase.storage.from('photos').getPublicUrl(p.storage_path).data.publicUrl
+        if (pub) {
+          u[p.id] = pub
+        } else {
+          // ewentualnie podpisz (gdy bucket prywatny i polityki na to pozwalają)
+          const { data: s } = await supabase.storage.from('photos').createSignedUrl(p.storage_path, 60 * 10)
+          if (s?.signedUrl) u[p.id] = s.signedUrl
         }
-      )
-      channelRef.current = ch.subscribe()
-      return () => { if (channelRef.current) supabase.removeChannel(channelRef.current) }
-    })()
-  }, [])
+      }
+      setUrls(u)
+    })().catch(e => setErr(String(e)))
+  }, []) // mount only
 
-  async function send() {
+  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
     setErr(null)
-    if (!text.trim() || !weddingId) return
-    const { data, error } = await supabase
-      .from('messages')
-      .insert({ wedding_id: weddingId, content: text, user_id: myId })
-      .select('id,content,created_at,user_id')
-      .single()
-    if (error) { setErr(error.message); return }
+    const file = e.target.files?.[0]
+    if (!file || !wid) return
+    setUploading(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const path = `${wid}/${crypto.randomUUID()}-${file.name}`
+      const { error: upErr } = await supabase.storage.from('photos').upload(path, file, { upsert: true })
+      if (upErr) throw upErr
 
-    if (channelRef.current) {
-      channelRef.current.send({ type: 'broadcast', event: 'new-message', payload: data as Msg })
+      const { data: row, error: insErr } = await supabase
+        .from('photos')
+        .insert({ wedding_id: wid, storage_path: path, uploaded_by: user?.id ?? null })
+        .select('id,storage_path,created_at,uploaded_by')
+        .single()
+      if (insErr) throw insErr
+
+      const pub = supabase.storage.from('photos').getPublicUrl(path).data.publicUrl
+      const url = pub || (await supabase.storage.from('photos').createSignedUrl(path, 60 * 10)).data?.signedUrl || ''
+      setUrls(prev => ({ ...prev, [row.id]: url }))
+      setPhotos(prev => [row as Photo, ...prev])
+    } catch (e: any) {
+      setErr(e?.message || 'Błąd wgrywania')
+    } finally {
+      setUploading(false)
+      e.currentTarget.value = ''
     }
-    setMsgs(prev => [...prev, data as Msg])
-    setText('')
+  }
+
+  async function removePhoto(p: Photo) {
+    if (!isOrganizer) return
+    setErr(null)
+    // usuń z bucketa
+    const { error: del1 } = await supabase.storage.from('photos').remove([p.storage_path])
+    if (del1) { setErr(del1.message); return }
+    // usuń z tabeli
+    const { error: del2 } = await supabase.from('photos').delete().eq('id', p.id)
+    if (del2) { setErr(del2.message); return }
+    setPhotos(prev => prev.filter(x => x.id !== p.id))
   }
 
   return (
-    <div className="flex flex-col h-[70vh] border rounded">
-      <div className="flex-1 overflow-auto p-3 space-y-2">
-        {msgs.map((m, i) => {
-          const who = m.user_id === myId ? 'Ty' : (m.user_id ? (nameByUserId[m.user_id] || 'Gość') : 'Gość')
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <label className="text-sm font-medium">Dodaj zdjęcie</label>
+        <input type="file" accept="image/*" onChange={onUpload} disabled={uploading || !wid}/>
+      </div>
+
+      {err && <p className="text-red-600 text-sm">{err}</p>}
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        {photos.map(p => {
+          const src = urls[p.id]
+          const author = p.uploaded_by ? (names[p.uploaded_by] || 'Gość') : 'Gość'
           return (
-            <div key={`${m.id}-${i}`} className="rounded bg-gray-100 px-2 py-1">
-              <span className="text-xs text-slate-500 mr-2">{who}:</span>{m.content}
+            <div key={p.id} className="border rounded overflow-hidden bg-white">
+              <a href={src} target="_blank" rel="noreferrer" className="block">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={src} alt="" className="w-full h-44 object-cover" />
+              </a>
+              <div className="px-2 py-1 text-xs flex items-center justify-between">
+                <span className="text-slate-600">dodał: <strong>{author}</strong></span>
+                {isOrganizer && (
+                  <button className="text-red-600 hover:underline" onClick={() => removePhoto(p)}>Usuń</button>
+                )}
+              </div>
             </div>
           )
         })}
       </div>
-      <div className="border-t p-2 flex gap-2">
-        <input className="flex-1 border rounded p-2"
-               value={text} onChange={e=>setText(e.target.value)} placeholder="Napisz wiadomość..." />
-        <button className="btn" onClick={send}>Wyślij</button>
-      </div>
-      {err && <div className="p-2 text-sm text-red-600">{err}</div>}
     </div>
   )
 }

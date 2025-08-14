@@ -21,7 +21,6 @@ export default function InfoPage() {
         .select('*')
         .eq('wedding_id', myWid)
         .maybeSingle()
-
       if (page) {
         setTitle(page.title ?? title)
         setContent(page.content ?? '')
@@ -42,23 +41,11 @@ export default function InfoPage() {
 
   async function save() {
     if (!wid) { alert('Brak powiązania z weselem.'); return }
-
-    const { data: existing } = await supabase
-      .from('info_pages').select('id').eq('wedding_id', wid).maybeSingle()
-
-    if (existing) {
-      const { error } = await supabase
-        .from('info_pages')
-        .update({ title, content })
-        .eq('wedding_id', wid)
-      if (error) return alert(error.message)
-    } else {
-      const { error } = await supabase
-        .from('info_pages')
-        .insert({ wedding_id: wid, title, content })
-      if (error) return alert(error.message)
-    }
-    alert('Zapisano')
+    const { error } = await supabase
+      .from('info_pages')
+      .upsert({ wedding_id: wid, title, content }, { onConflict: 'wedding_id' })
+    if (error) alert(error.message)
+    else alert('Zapisano')
   }
 
   if (loading) return <p>Ładowanie…</p>
@@ -68,13 +55,9 @@ export default function InfoPage() {
       <h1 className="text-2xl font-bold">{title}</h1>
       {isOrganizer ? (
         <>
-          <input className="border p-2 rounded w-full"
-                 value={title} onChange={e=>setTitle(e.target.value)} />
-          <textarea className="border p-2 rounded w-full h-40"
-                    value={content} onChange={e=>setContent(e.target.value)} />
-          <button className="bg-black text-white px-4 py-2 rounded" onClick={save}>
-            Zapisz
-          </button>
+          <input className="border p-2 rounded w-full" value={title} onChange={e=>setTitle(e.target.value)} />
+          <textarea className="border p-2 rounded w-full h-40" value={content} onChange={e=>setContent(e.target.value)} />
+          <button className="bg-black text-white px-4 py-2 rounded" onClick={save}>Zapisz</button>
         </>
       ) : (
         <div className="prose whitespace-pre-wrap">{content || 'Brak treści'}</div>
