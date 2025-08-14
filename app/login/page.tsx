@@ -2,6 +2,11 @@
 import { supaClient } from '@/lib/supabaseClient'
 import { useState } from 'react'
 
+const SITE_URL =
+  (typeof window !== 'undefined' && window.location?.origin) ||
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  'http://localhost:3000'
+
 export default function LoginPage() {
   const supabase = supaClient()
   const [email, setEmail] = useState('')
@@ -13,7 +18,10 @@ export default function LoginPage() {
     setLoading(true)
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: `${location.origin}/app` }
+      options: {
+        // KLUCZOWE: zawsze kierujemy na serwerowy callback
+        emailRedirectTo: `${SITE_URL}/auth/callback?next=/app`,
+      },
     })
     setLoading(false)
     if (error) alert(error.message)
@@ -29,10 +37,12 @@ export default function LoginPage() {
         <form onSubmit={handleLogin} className="space-y-3">
           <input
             className="w-full border rounded p-2"
-            type="email" placeholder="Twój e-mail"
-            value={email} onChange={e=>setEmail(e.target.value)}
+            type="email"
+            placeholder="Twój e-mail"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
           />
-          <button className="bg-black text-white rounded px-4 py-2 disabled:opacity-50" disabled={loading || !email}>
+          <button className="btn disabled:opacity-50" disabled={loading || !email}>
             {loading ? 'Wysyłam…' : 'Wyślij link'}
           </button>
         </form>
