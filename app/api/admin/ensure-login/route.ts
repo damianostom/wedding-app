@@ -8,59 +8,56 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 function slugify(s: string) {
-  return s
-    .normalize('NFKD')
+  return s.normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
+    .toLowerCase().trim()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
 }
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { firstName: string; lastName: string; password: string }
-    const first = body.firstName?.trim()
-    const last = body.lastName?.trim()
-    const password = body.password?.trim()
-    if (!first || !last || !password) {
-      return NextResponse.json({ error: 'Podaj imię, nazwisko i hasło.' }, { status: 400 })
+    const { firstName, lastName, password } = await req.json() as {
+      firstName: string; lastName: string; password: string
+    }
+    if (!firstName || !lastName || !password) {
+      return NextResponse.json({ error: 'Podaj firstName, lastName, password' }, { status: 400 })
     }
 
-    // Sesja i rola wywołującego (musi być organizer)
+    const username = `${slugify(firstName)}-${slugify(lastName)}`
+    const syntheticEmail = `${username}@noemail.local`
+
+    // 1) czy wywołujący to organizator
     const browser = createRouteHandlerClient({ cookies })
     const { data: { user } } = await browser.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Brak sesji.' }, { status: 401 })
+    if (!user) return NextResponse.json({ error: 'Brak sesji' }, { status: 401 })
 
     const { data: me } = await browser
       .from('guests')
-      .select('wedding_id, role')
+      .select('id,wedding_id,full_name,role')
       .eq('user_id', user.id)
       .maybeSingle()
 
     if (!me || me.role !== 'organizer') {
-      return NextResponse.json({ error: 'Tylko organizator może dodawać gości.' }, { status: 403 })
+      return NextResponse.json({ error: 'Tylko organizator' }, { status: 403 })
     }
-
-    const username = `${slugify(first)}-${slugify(last)}`
-    const email = `${username}@noemail.local`
 
     const admin = getSupabaseAdmin()
 
-    // Szukamy istniejącego usera po syntetycznym e-mailu
+    // 2) znajdź/utwórz użytkownika auth do logowania hasłem
     const list = await admin.auth.admin.listUsers({ page: 1, perPage: 2000 })
     if (list.error) return NextResponse.json({ error: list.error.message }, { status: 400 })
 
     let target = list.data.users.find(
-      (u: SupaUser) => (u.email ?? '').toLowerCase() === email.toLowerCase()
+      (u: SupaUser) => (u.email ?? '').toLowerCase() === syntheticEmail.toLowerCase()
     )
 
     if (!target) {
       const created = await admin.auth.admin.createUser({
-        email,
+        email: syntheticEmail,
         password,
         email_confirm: true,
-        user_metadata: { first_name: first, last_name: last },
+        user_metadata: { first_name: firstName, last_name: lastName }
       })
       if (created.error) return NextResponse.json({ error: created.error.message }, { status: 400 })
       target = created.data.user
@@ -69,16 +66,13 @@ export async function POST(req: Request) {
       if (upd.error) return NextResponse.json({ error: upd.error.message }, { status: 400 })
     }
 
-    // Rekord w guests
-    const full_name = `${first} ${last}`
-    const ins = await admin
-      .from('guests')
-      .insert({ wedding_id: me.wedding_id, user_id: target!.id, full_name, role: 'guest', username })
-      .select('id')
-      .single()
-    if (ins.error) return NextResponse.json({ error: ins.error.message }, { status: 400 })
+    // 3) podczep username + user_id do rekordu organizatora
+    const upg = await admin.from('guests')
+      .update({ username, user_id: target!.id })
+      .eq('id', me.id)
+    if (upg.error) return NextResponse.json({ error: upg.error.message }, { status: 400 })
 
-    return NextResponse.json({ ok: true, username })
+    return NextResponse.json({ ok: true, username, email: syntheticEmail })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'Unknown error' }, { status: 500 })
   }
