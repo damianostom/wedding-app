@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Kolory, font, bazowe tła */
+@layer base {
+  :root {
+    --bg: 248 250 252;   /* slate-50 */
+    --ink: 15 23 42;     /* slate-900 */
+    --muted: 100 116 139;/* slate-500 */
+  }
+  html, body, :root { height: 100%; }
+  body { @apply bg-[rgb(var(--bg))] text-[rgb(var(--ink))] antialiased; }
+  a { @apply underline-offset-2 hover:underline; }
+}
+
+/* Komponenty użytkowe */
+@layer components {
+  .container-app { @apply container max-w-6xl; }
+  .btn { @apply inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500; }
+  .btn-ghost { @apply inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-brand-700 hover:bg-brand-50; }
+  .card { @apply rounded-2xl border border-slate-200 bg-white shadow-sm; }
+  .card-pad { @apply p-6 md:p-8; }
+  .pill { @apply inline-flex items-center rounded-full bg-brand-100 px-3 py-1 text-xs font-medium text-brand-700; }
+  .muted { @apply text-slate-600; }
+  .nav { @apply flex flex-wrap gap-2; }
+  .nav-link { @apply rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100; }
+  .nav-link-active { @apply bg-slate-900 text-white hover:bg-slate-900; }
+}

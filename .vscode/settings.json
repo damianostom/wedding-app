@@ -1,0 +1,16 @@
+{
+  "tailwindCSS.includeLanguages": {
+    "typescript": "javascript",
+    "typescriptreact": "javascript",
+    "scss": "css",
+    "css": "css"
+  },
+  "css.validate": false,
+  "scss.validate": false,
+  "less.validate": false,
+
+  "typescript.tsserver.experimental.enableProjectDiagnostics": false,
+  "problems.exclude": {
+    "**/node_modules/**": true
+  }
+}
