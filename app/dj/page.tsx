@@ -1,98 +1,111 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { supaClient } from '@/lib/supabaseClient'
 
-export const dynamic = 'force-dynamic'
+type WidOpt = { id: string; label: string }
 
-type Req = { id: string; title: string; artist: string|null; status: 'pending'|'played'|'rejected'; votes: number }
+export default function DjLoginPage() {
+  const supabase = supaClient()
+  const router = useRouter()
 
-export default function DjPage() {
-  const [weddingId, setWeddingId] = useState<string | null>(null)
-  const [pending, setPending]   = useState<Req[]>([])
-  const [played, setPlayed]     = useState<Req[]>([])
-  const [rejected, setRejected] = useState<Req[]>([])
+  const [opts, setOpts] = useState<WidOpt[]>([])
+  const [wid, setWid] = useState('')
+  const [token, setToken] = useState('')
   const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     ;(async () => {
-      const j = await fetch('/api/dj/session').then(r=>r.json()).catch(()=>({ ok:false }))
-      if (!j?.ok) { window.location.assign('/dj/login'); return }
-      setWeddingId(j.weddingId as string)
-      await refresh()
+      setLoading(true)
+      setErr(null)
+
+      // Zbierz unikalne wesela z guests (preferuj organizatorów do ładnej etykiety)
+      const { data, error } = await supabase
+        .from('guests')
+        .select('wedding_id, full_name, role')
+        .order('role', { ascending: true }) // guest -> organizer (później nadpiszemy lepszym opisem)
+      if (error) { setErr(error.message); setLoading(false); return }
+
+      const seen = new Set<string>()
+      const out: Record<string, WidOpt> = {}
+
+      for (const g of data ?? []) {
+        if (!seen.has(g.wedding_id)) {
+          seen.add(g.wedding_id)
+          out[g.wedding_id] = {
+            id: g.wedding_id,
+            // podstawowa etykieta = sam UUID
+            label: g.wedding_id,
+          }
+        }
+        // jeżeli to organizator i mamy full_name – dorzuć do etykiety
+        if (g.role === 'organizer' && g.full_name) {
+          out[g.wedding_id] = {
+            id: g.wedding_id,
+            label: `${g.wedding_id} — ${g.full_name}`,
+          }
+        }
+      }
+
+      const list = Object.values(out)
+      setOpts(list)
+      if (list.length && !wid) setWid(list[0].id)
+      setLoading(false)
     })()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function refresh() {
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
     setErr(null)
-    const res = await fetch('/api/dj/list')
-    const j = await res.json().catch(()=>({}))
-    if (!res.ok) { setErr(j.error || 'Błąd listy'); return }
-    setPending(j.pending); setPlayed(j.played); setRejected(j.rejected)
-  }
+    if (!wid || !token) { setErr('Wybierz wesele i wpisz token.'); return }
 
-  async function setStatus(id: string, status: 'pending'|'played'|'rejected') {
-    const res = await fetch('/api/dj/set-status', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ id, status })
+    const res = await fetch('/api/dj/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ weddingId: wid, token }),
     })
-    if (res.ok) await refresh()
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok || !j?.ok) {
+      setErr(j?.error || 'Niepoprawny token')
+      return
+    }
+
+    // przejście do boxa (zostawiamy to jak wcześniej)
+    router.push(`/app/dj?w=${encodeURIComponent(wid)}&s=${encodeURIComponent(j.session)}`)
   }
-
-  async function clearPlayedToRejected() {
-    const res = await fetch('/api/dj/clear-played', { method:'POST' })
-    if (res.ok) await refresh()
-  }
-
-  const Box = ({title, items, actions}:{title:string; items:Req[]; actions:(r:Req)=>JSX.Element}) => (
-    <div>
-      <h2 className="text-lg font-semibold">{title}</h2>
-      {!items.length ? <p className="text-slate-600">Brak.</p> : (
-        <ul className="divide-y">
-          {items.map(r => (
-            <li key={r.id} className="py-2 flex items-center justify-between gap-2">
-              <div>
-                <div className="font-medium">{r.title}</div>
-                <div className="text-xs text-slate-600">{r.artist || ''} • 👍 {r.votes}</div>
-              </div>
-              {actions(r)}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-
-  if (!weddingId) return null
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">DJ box – prośby o piosenki</h1>
-        <div className="flex gap-2">
-          <a className="btn" href="/app">Panel</a>
-          <a className="btn" href="/dj/login">Wyloguj</a>
+    <div className="max-w-md mx-auto space-y-4">
+      <h1 className="text-2xl font-bold">DJ – logowanie</h1>
+
+      <form onSubmit={onSubmit} className="space-y-3">
+        <div>
+          <label className="text-sm font-medium">Wesele</label>
+          <select
+            className="border rounded p-2 w-full"
+            value={wid}
+            onChange={(e) => setWid(e.target.value)}
+            disabled={loading}
+          >
+            {opts.map(o => (
+              <option key={o.id} value={o.id}>{o.label}</option>
+            ))}
+          </select>
         </div>
-      </div>
 
-      <button className="btn" onClick={clearPlayedToRejected}>
-        Wyczyść zagrane → odrzucone
-      </button>
+        <input
+          className="border rounded p-2 w-full"
+          placeholder="Token"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+        />
 
-      {err && <p className="text-sm text-red-600">{err}</p>}
+        <button className="btn w-full" disabled={loading}>Wejdź do DJ boxa</button>
 
-      <Box title="Oczekujące" items={pending}
-           actions={(r)=>(
-             <div className="flex gap-2">
-               <button className="btn" onClick={()=>setStatus(r.id,'played')}>Oznacz: zagrane</button>
-               <button className="btn" onClick={()=>setStatus(r.id,'rejected')}>Odrzuć</button>
-             </div>
-           )} />
-
-      <Box title="Zagrane" items={played}
-           actions={(r)=>(<button className="btn" onClick={()=>setStatus(r.id,'pending')}>Przywróć</button>)} />
-
-      <Box title="Odrzucone" items={rejected}
-           actions={(r)=>(<button className="btn" onClick={()=>setStatus(r.id,'pending')}>Przywróć</button>)} />
+        {err && <p className="text-sm text-red-600">{err}</p>}
+      </form>
     </div>
   )
 }
