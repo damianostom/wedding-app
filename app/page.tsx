@@ -1,117 +1,303 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
+
+type FeatureProps = {
+  title: string
+  desc: string
+  href: string
+}
+
+/** Karta funkcji (lekki efekt reveal + lift) */
+function Feature({ title, desc, href }: FeatureProps) {
+  return (
+    <article
+      data-reveal
+      className="rounded-2xl border bg-white/80 backdrop-blur-sm shadow-sm hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5"
+    >
+      <div className="p-6 md:p-8">
+        <h3 className="text-lg font-semibold">{title}</h3>
+        <p className="mt-2 text-sm text-slate-600">{desc}</p>
+        <Link
+          href={href}
+          className="inline-flex items-center gap-2 mt-4 text-sm font-medium text-white px-4 py-2 rounded-md bg-[rgb(var(--brand-600))] hover:bg-[rgb(var(--brand-700))] no-underline"
+        >
+          Otwórz
+          <span aria-hidden>→</span>
+        </Link>
+      </div>
+    </article>
+  )
+}
 
 export default function Home() {
   const supabase = supaClient()
   const [authed, setAuthed] = useState<boolean | null>(null)
 
+  // HERO: interaktywny gradient + konfetti
+  const heroRef = useRef<HTMLDivElement | null>(null)
+  const confettiRef = useRef<HTMLCanvasElement | null>(null)
+  const rafId = useRef<number | null>(null)
+
+  // sprawdź sesję (czy pokazać przycisk "Zaloguj się")
   useEffect(() => {
-    ;(async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      setAuthed(!!session)
-    })()
+    let mounted = true
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (mounted) setAuthed(!!session)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  // reveal – pojedynczy observer do elementów z [data-reveal]
+  useEffect(() => {
+    const els = Array.from(document.querySelectorAll<HTMLElement>('[data-reveal]'))
+    if (!els.length) return
+    const io = new IntersectionObserver(
+      entries => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            e.target.classList.add('reveal-in')
+            io.unobserve(e.target)
+          }
+        })
+      },
+      { threshold: 0.12 }
+    )
+    els.forEach(el => io.observe(el))
+    return () => io.disconnect()
+  }, [])
+
+  // interaktywny spotlight w hero
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const el = heroRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 100
+    const y = ((e.clientY - rect.top) / Math.max(1, rect.height)) * 100
+    el.style.setProperty('--mx', `${x}%`)
+    el.style.setProperty('--my', `${y}%`)
+  }
+
+  // bezpieczne konfetti (TS-friendly)
+  function fireConfetti() {
+    const c = confettiRef.current
+    const el = heroRef.current
+    if (!c || !el) return
+
+    // zamrożone wymiary na czas animacji
+    const width = el.clientWidth
+    const height = el.clientHeight
+
+    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1))
+    c.width = width * dpr
+    c.height = height * dpr
+    c.style.width = `${width}px`
+    c.style.height = `${height}px`
+
+    const ctx = c.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    type P = {
+      x: number
+      y: number
+      vx: number
+      vy: number
+      w: number
+      h: number
+      r: number
+      vr: number
+      color: string
+      life: number
+    }
+
+    const colors = ['#f43f5e', '#fb7185', '#fbbf24', '#34d399', '#60a5fa', '#a78bfa', '#eab308', '#f59e0b']
+    const parts: P[] = []
+    const count = 140
+    for (let i = 0; i < count; i++) {
+      parts.push({
+        x: Math.random() * width,
+        y: -20 + Math.random() * 20,
+        vx: -1 + Math.random() * 2,
+        vy: 2 + Math.random() * 3,
+        w: 6 + Math.random() * 6,
+        h: 8 + Math.random() * 10,
+        r: Math.random() * Math.PI,
+        vr: -0.2 + Math.random() * 0.4,
+        color: colors[i % colors.length],
+        life: 1 + Math.random() * 1.2,
+      })
+    }
+
+    let t0 = performance.now()
+    const loop = (t: number) => {
+      const dt = Math.min(0.033, (t - t0) / 1000)
+      t0 = t
+      ctx.clearRect(0, 0, width, height)
+      let alive = 0
+      for (const p of parts) {
+        p.x += p.vx * 60 * dt
+        p.y += p.vy * 60 * dt
+        p.vy += 0.03 * 60 * dt
+        p.r += p.vr * 60 * dt
+        p.life -= 0.015 * 60 * dt
+        if (p.life <= 0) continue
+        alive++
+
+        ctx.save()
+        ctx.translate(p.x, p.y)
+        ctx.rotate(p.r)
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life))
+        ctx.fillStyle = p.color
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h)
+        ctx.restore()
+      }
+      if (alive > 0) {
+        rafId.current = requestAnimationFrame(loop)
+      } else {
+        ctx.clearRect(0, 0, width, height)
+        rafId.current = null
+      }
+    }
+    rafId.current = requestAnimationFrame(loop)
+  }
+
+  useEffect(() => {
+    // cleanup ewentualnej animacji
+    return () => {
+      if (rafId.current) cancelAnimationFrame(rafId.current)
+    }
   }, [])
 
   return (
-    <div className="space-y-12">
+    <>
       {/* HERO */}
-      <section className="card overflow-hidden wedding-card relative">
-        {/* tło/akcenty */}
-        <div
-          className="absolute inset-0 -z-10"
+      <section
+        ref={heroRef}
+        onPointerMove={onPointerMove}
+        className="relative overflow-hidden rounded-3xl border shadow-sm bg-white"
+      >
+        {/* interaktywny spotlight */}
+        <div className="absolute inset-0 -z-10 hero-spotlight" />
+        {/* tła / gradienty */}
+        <div className="absolute inset-0 -z-20 bg-gradient-to-br from-rose-50 to-sky-50" />
+        <canvas
+          ref={confettiRef}
+          className="pointer-events-none absolute inset-0 -z-10"
           aria-hidden
-          style={{
-            background:
-              'radial-gradient(1200px 500px at 80% -150px, rgba(254,231,240,0.8), transparent),' +
-              'radial-gradient(900px 400px at 10% 0%, rgba(199,146,125,0.18), transparent),' +
-              'radial-gradient(700px 500px at 100% 80%, rgba(199,146,125,0.12), transparent)'
-          }}
         />
-        {/* płyta winylowa */}
-        <div className="hidden md:block absolute -right-24 -bottom-24 h-96 w-96 rounded-full bg-gradient-to-br from-white to-rose-50 border border-rose-100 shadow-2xl spin-slow">
-          <div className="absolute inset-6 rounded-full border-4 border-rose-100" />
-          <div className="absolute inset-24 rounded-full bg-[rgb(var(--brand-600))]" />
-          <div className="absolute inset-1/2 -translate-x-1/2 -translate-y-1/2 h-6 w-6 rounded-full bg-white shadow" />
-        </div>
+        <div className="p-6 md:p-10">
+          <span className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium bg-[rgb(var(--brand-100))] text-[rgb(var(--brand-700))]">
+            Aplikacja weselna
+            <span className="sparkle" aria-hidden>✦</span>
+          </span>
 
-        <div className="card-pad relative">
-          <span className="pill">Let’s party!</span>
-          <h1 className="mt-3 text-4xl md:text-5xl font-bold tracking-tight text-gradient">
-            Zabawa zaczyna się tutaj
+          <h1 className="mt-4 text-3xl md:text-5xl font-bold tracking-tight">
+            Witamy na naszej stronie weselnej 🎉 Agatka i Damian
           </h1>
-          <p className="mt-4 max-w-2xl text-base md:text-lg muted">
-            Zgarnij wszystkie info, wrzuć fotki, dogadaj się na czacie i wybierz hity na parkiet.
+          <p className="mt-3 max-w-2xl text-slate-600">
+            Zaloguj się, aby zobaczyć najważniejsze informacje, galerię zdjęć, czat gości oraz plan stołów w PDF.
           </p>
-          <div className="mt-7 flex flex-wrap gap-3">
-            {!authed && (
-              <Link href="/login" className="btn btn-gradient no-underline">
-                Dołącz do zabawy
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            {authed === false && (
+              <Link href="/login" className="no-underline">
+                <span className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white shadow-sm transition bg-[rgb(var(--brand-600))] hover:bg-[rgb(var(--brand-700))]">
+                  Zaloguj się
+                </span>
               </Link>
             )}
-            <Link href="/app" className="btn-ghost no-underline">
-              Przejdź do panelu
+            <Link href="/app" className="no-underline">
+              <span className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-[rgb(var(--brand-700))] hover:bg-[rgba(var(--brand-100),.6)] transition">
+                Przejdź do panelu
+              </span>
             </Link>
+            <button
+              className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white shadow-sm transition bg-black/80 hover:bg-black"
+              onClick={fireConfetti}
+              type="button"
+            >
+              🎊 Zbij piątkę!
+            </button>
           </div>
 
-          {/* „iskierki” */}
-          <div className="absolute -left-6 top-8 h-28 w-28 rounded-full bg-white/50 blur-2xl float-slow" aria-hidden />
-          <div className="absolute left-28 -top-6 h-16 w-16 rounded-full bg-rose-200/60 blur-xl float-slow delay-300" aria-hidden />
+          <p className="mt-3 text-xs text-slate-500">
+            Pro tip: Zapisz stronę na ekranie głównym telefonu – będzie działać jak mini-apka.
+          </p>
         </div>
       </section>
 
       {/* FEATURES */}
-      <section className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-        <article className="card card-pad hover:lift">
-          <h3 className="text-lg font-semibold">Najważniejsze informacje</h3>
-          <p className="mt-2 muted">Co? Gdzie? Kiedy? Wszystko w pigułce, bez przekopywania wiadomości.</p>
-          <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/info">
-            Otwórz informacje o naszym dniu
-          </Link>
-        </article>
-
-        <article className="card card-pad hover:lift">
-          <h3 className="text-lg font-semibold">Galeria zdjęć</h3>
-          <p className="mt-2 muted">Pstryknij, wrzuć i podziwiaj — cała ekipa ma dostęp.</p>
-          <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/gallery">
-            Otwórz galerię
-          </Link>
-        </article>
-
-        <article className="card card-pad hover:lift">
-          <h3 className="text-lg font-semibold">Czat</h3>
-          <p className="mt-2 muted">Umawiamy dojazdy, toasty i tańce — live.</p>
-          <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/chat">
-            Otwórz czat
-          </Link>
-        </article>
-
-        <article className="card card-pad hover:lift">
-          <h3 className="text-lg font-semibold">Plan stołów (PDF)</h3>
-          <p className="mt-2 muted">Sprawdź, przy którym stole wylądujesz — i kto siedzi obok.</p>
-          <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/tables">
-            Otwórz plan sali
-          </Link>
-        </article>
-
-        <article className="card card-pad hover:lift">
-          <h3 className="text-lg font-semibold">Prośby o piosenki</h3>
-          <p className="mt-2 muted">Masz sztos numer? Dodaj i zbieraj lajki — DJ patrzy!</p>
-          <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/songs">
-            Otwórz „Piosenki”
-          </Link>
-        </article>
-
-        {/* karteczka z tipem */}
-        <article className="card card-pad bg-gradient-to-br from-rose-50 to-white hover:lift">
-          <h3 className="text-lg font-semibold">Pro tip</h3>
-          <p className="mt-2 muted">
-            Zapisz stronę na ekranie głównym telefonu — będzie działać jak mini-apka.
-          </p>
-        </article>
+      <section className="grid gap-5 md:grid-cols-2 mt-10">
+        <Feature
+          title="Najważniejsze informacje"
+          href="/app/info"
+          desc="Godziny, lokalizacja, dojazd i istotne punkty. Organizer edytuje treść na bieżąco."
+        />
+        <Feature
+          title="Galeria zdjęć"
+          href="/app/gallery"
+          desc="Wrzucaj fotki i pobieraj paczki .zip. Wszystko leci do chmury."
+        />
+        <Feature
+          title="Czat"
+          href="/app/chat"
+          desc="Rozmowy w czasie rzeczywistym — wygodnie i bez instalacji."
+        />
+        <Feature
+          title="Plan stołów (PDF)"
+          href="/app/tables"
+          desc="Sprawdź, przy którym stole wylądujesz — i kto siedzi obok."
+        />
+        <Feature
+          title="Prośby o piosenki"
+          href="/app/songs"
+          desc="Masz sztos numer? Dodaj i zbieraj lajki — DJ patrzy!"
+        />
+        <Feature
+          title="DJ box"
+          href="/dj"
+          desc="Strefa dla DJ-a: szybkie zarządzanie kolejką i zagranymi."
+        />
       </section>
-    </div>
+
+      {/* local styles (tylko dla tej strony) */}
+      <style jsx global>{`
+        /* reveal */
+        [data-reveal] {
+          opacity: 0;
+          transform: translateY(6px) scale(0.98);
+          transition: opacity 500ms ease, transform 500ms ease;
+        }
+        .reveal-in {
+          opacity: 1 !important;
+          transform: translateY(0) scale(1) !important;
+        }
+
+        /* spotlight w hero – sterowany zmiennymi --mx/--my */
+        .hero-spotlight {
+          --mx: 50%;
+          --my: 0%;
+          background:
+            radial-gradient(500px 200px at var(--mx) var(--my), rgba(199,146,125,0.15), transparent 70%),
+            radial-gradient(800px 350px at 100% 20%, rgba(254,231,240,0.5), transparent);
+        }
+
+        /* delikatna animacja gwiazdki w pigułce */
+        .sparkle {
+          display: inline-block;
+          animation: sparkle 2s ease-in-out infinite;
+          transform-origin: 50% 50%;
+        }
+        @keyframes sparkle {
+          0%, 100% { transform: rotate(0deg) scale(1); opacity: 1; }
+          50%      { transform: rotate(12deg) scale(1.15); opacity: .85; }
+        }
+      `}</style>
+    </>
   )
 }

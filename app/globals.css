@@ -19,7 +19,6 @@
 
   html, body, :root { height: 100%; }
   .wedding-bg{
-    /* delikatny pattern + gradient */
     background:
       radial-gradient(1500px 600px at 50% -200px, rgba(199,146,125,0.12), transparent),
       radial-gradient(800px 400px at 100% 20%, rgba(254,231,240,0.6), transparent),
@@ -39,8 +38,7 @@
   .container-app { @apply container max-w-6xl; }
 
   .btn {
-    @apply inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white
-           shadow-sm transition;
+    @apply inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white shadow-sm transition;
     background-color: rgb(var(--brand-600));
   }
   .btn:hover { background-color: rgb(var(--brand-700)); }
@@ -60,16 +58,12 @@
   .nav-link-active { @apply bg-slate-900 text-white hover:bg-slate-900; }
 
   /* ——— dodatki wizualne ——— */
-
-  /* gradient na tytuł hero */
   .text-gradient{
     background: linear-gradient(90deg, rgba(var(--brand-700),1), rgba(var(--brand-600),1));
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
   }
-
-  /* delikatny „lift” kart */
   .hover\:lift{
     transition: transform .25s ease, box-shadow .25s ease;
   }
@@ -77,27 +71,96 @@
     transform: translateY(-2px);
     box-shadow: 0 14px 30px rgba(163,118,101,0.18), 0 4px 8px rgba(0,0,0,0.04);
   }
-
-  /* przycisk z gradientem (na hero) */
   .btn-gradient{
     background-image: linear-gradient(135deg, rgba(var(--brand-600),1), rgba(var(--brand-700),1));
   }
-  .btn-gradient:hover{
-    filter: brightness(0.95);
-  }
-
-  /* animacje tła */
+  .btn-gradient:hover{ filter: brightness(0.95); }
   .float-slow{ animation: floatY 8s ease-in-out infinite; }
   .float-slow.delay-300{ animation-delay: .3s; }
   .spin-slow{ animation: spinSlow 18s linear infinite; }
+
+  /* —— NOWE: połysk przycisku —— */
+  .btn-shimmer{
+    position: relative; overflow: hidden;
+  }
+  .btn-shimmer::after{
+    content:'';
+    position:absolute; inset:-1px;
+    background: linear-gradient(120deg, transparent 0%, rgba(255,255,255,.35) 30%, transparent 60%);
+    transform: translateX(-100%);
+    animation: shimmer 2.8s linear infinite;
+  }
+
+  /* —— NOWE: spotlight w hero (reaguje na mysz) —— */
+  .hero-spotlight::before{
+    content:''; position:absolute; inset:0; pointer-events:none;
+    background: radial-gradient(600px circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,0.25), transparent 60%);
+    transition: background-position .2s ease;
+  }
+
+  /* —— NOWE: aurora / świetlne pasy —— */
+  .aurora{
+    position:absolute; inset:-10% -5% -15% -5%; filter: blur(40px); pointer-events:none; overflow:hidden;
+  }
+  .aurora .beam{
+    position:absolute; inset:-20% -10%;
+    background: conic-gradient(from 0deg, rgba(254,231,240,.35), rgba(199,146,125,.25), transparent 60%);
+    animation: aurora 16s ease-in-out infinite alternate;
+    transform-origin: 50% 50%;
+  }
+  .aurora .beam.delay-200{ animation-delay: .2s; }
+  .aurora .beam.delay-400{ animation-delay: .4s; }
+
+  /* —— NOWE: nutki lecące do góry —— */
+  .notes{ position:absolute; inset:0; pointer-events:none; }
+  .note{
+    position:absolute; bottom:-10px; left:10%;
+    font-size:18px; opacity:.0; animation: rise 6s ease-in-out infinite;
+  }
+  .note:nth-child(2){ left:25% }
+  .note:nth-child(3){ left:40% }
+  .note:nth-child(4){ left:60% }
+  .note:nth-child(5){ left:75% }
+  .note:nth-child(6){ left:88% }
+  .note.delay-200{ animation-delay:.2s }
+  .note.delay-400{ animation-delay:.4s }
+  .note.delay-600{ animation-delay:.6s }
+  .note.delay-800{ animation-delay:.8s }
+  .note.delay-1000{ animation-delay:1s }
+
+  /* —— NOWE: scroll-reveal —— */
+  .reveal{ opacity:0; transform: translateY(10px); animation: none; }
+  .reveal.reveal-up{ animation: revealUp .7s ease forwards; }
+  .reveal.delay-150{ animation-delay: .15s }
+  .reveal.delay-300{ animation-delay: .30s }
+
+  /* —— NOWE: lekki tilt (CSS only) —— */
+  .tilt{
+    will-change: transform;
+    transform: perspective(800px) rotateX(0) rotateY(0) translateY(0);
+    transition: transform .25s ease;
+  }
+  .tilt:hover{
+    transform: perspective(800px) rotateX(2deg) rotateY(-2deg) translateY(-2px);
+  }
 }
 
 /* Klucze animacji */
-@keyframes floatY {
-  0%, 100% { transform: translateY(0px); }
-  50%      { transform: translateY(-10px); }
+@keyframes floatY { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+@keyframes spinSlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes shimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+@keyframes aurora {
+  0%   { transform: translateY(-6%) rotate(0deg) scale(1.05); opacity:.8; }
+  50%  { transform: translateY(3%)  rotate(15deg) scale(1.1);  opacity:1; }
+  100% { transform: translateY(-4%) rotate(-10deg) scale(1.08); opacity:.85; }
 }
-@keyframes spinSlow {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+@keyframes rise {
+  0%   { transform: translateY(0)   translateX(0)    rotate(0deg);   opacity:0; }
+  10%  { opacity:.8; }
+  50%  { transform: translateY(-50vh) translateX(10px) rotate(12deg); }
+  100% { transform: translateY(-85vh) translateX(-8px) rotate(-10deg); opacity:0; }
+}
+@keyframes revealUp {
+  0% { opacity:0; transform: translateY(10px) }
+  100% { opacity:1; transform: translateY(0) }
 }
