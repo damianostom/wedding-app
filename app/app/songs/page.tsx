@@ -1,176 +1,166 @@
+// app/app/songs/page.tsx
 'use client'
+export const dynamic = 'force-dynamic'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 import { getMyWeddingId } from '@/lib/getWeddingId'
-import type { RealtimeChannel } from '@supabase/supabase-js'
 
-type Req = {
-  id: number
+type RequestRow = {
+  id: string
   title: string
   artist: string | null
-  note: string | null
-  status: 'queued' | 'played' | 'rejected'
   created_at: string
+  user_id: string | null
+  status: 'pending' | 'played' | 'rejected' | null
 }
+
+type VoteRow = { request_id: string; user_id: string }
 
 export default function SongsPage() {
   const supabase = supaClient()
-  const [wid, setWid] = useState<string | null>(null)
+  const [weddingId, setWeddingId] = useState<string | null>(null)
   const [meId, setMeId] = useState<string | null>(null)
 
-  const [list, setList] = useState<Req[]>([])
-  const [votes, setVotes] = useState<Record<number, number>>({})
-  const [myVotes, setMyVotes] = useState<Set<number>>(new Set())
-
+  const [reqs, setReqs] = useState<RequestRow[]>([])         // ← pusta tablica (bez nulli)
+  const [votes, setVotes] = useState<VoteRow[]>([])          // ← pusta tablica
   const [title, setTitle] = useState('')
   const [artist, setArtist] = useState('')
-  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
-
-  const chRef = useRef<RealtimeChannel | null>(null)
 
   useEffect(() => {
     ;(async () => {
       setErr(null)
-      const w = await getMyWeddingId()
-      if (!w) { setErr('Brak powiązania z weselem.'); return }
-      setWid(w)
+      const wid = await getMyWeddingId()
+      setWeddingId(wid)
 
       const { data: { user } } = await supabase.auth.getUser()
       setMeId(user?.id ?? null)
 
-      // pobierz requesty
-      const { data: reqs, error: e1 } = await supabase
+      // pobierz prośby
+      const { data: rs, error: er1 } = await supabase
         .from('song_requests')
-        .select('id,title,artist,note,status,created_at')
-        .eq('wedding_id', w)
+        .select('id,title,artist,created_at,user_id,status')
+        .eq('wedding_id', wid)
         .order('created_at', { ascending: false })
-      if (e1) { setErr(e1.message); return }
-      setList(reqs as Req[])
+      if (er1) setErr(er1.message)
+      setReqs(rs ?? [])
 
-      // pobierz głosy dla tych requestów
-      const ids = (reqs ?? []).map(r => r.id)
+      // pobierz głosy dla tych próśb
+      const ids = (rs ?? []).map(r => r.id)
       if (ids.length) {
         const { data: vs } = await supabase
           .from('song_votes')
-          .select('request_id, user_id')
+          .select('request_id,user_id')
           .in('request_id', ids)
-        const counts: Record<number, number> = {}
-        const mine = new Set<number>()
-        for (const v of vs ?? []) {
-          counts[v.request_id] = (counts[v.request_id] ?? 0) + 1
-          if (v.user_id && v.user_id === user?.id) mine.add(v.request_id)
-        }
-        setVotes(counts)
-        setMyVotes(mine)
+        setVotes(vs ?? [])
+      } else {
+        setVotes([])
       }
 
-      // realtime
-      const ch = supabase.channel(`songs:${w}`)
-      ch.on('postgres_changes',
-        { event: '*', schema: 'public', table: 'song_requests', filter: `wedding_id=eq.${w}` },
-        (payload: any) => {
-          if (payload.eventType === 'INSERT') {
-            setList(prev => [payload.new as Req, ...prev])
-          } else if (payload.eventType === 'UPDATE') {
-            const n = payload.new as Req
-            setList(prev => prev.map(x => x.id === n.id ? { ...x, ...n } : x))
-          } else if (payload.eventType === 'DELETE') {
-            const id = payload.old.id as number
-            setList(prev => prev.filter(x => x.id !== id))
-            setVotes(prev => { const c = { ...prev }; delete c[id]; return c })
-            setMyVotes(prev => { const s = new Set(prev); s.delete(id); return s })
-          }
-        })
-      ch.on('postgres_changes',
-        { event: '*', schema: 'public', table: 'song_votes' },
-        (payload: any) => {
-          const reqId = (payload.new?.request_id ?? payload.old?.request_id) as number
-          if (!reqId) return
-          if (payload.eventType === 'INSERT') {
-            setVotes(prev => ({ ...prev, [reqId]: (prev[reqId] ?? 0) + 1 }))
-            if (payload.new?.user_id === meId) setMyVotes(prev => new Set(prev).add(reqId))
-          } else if (payload.eventType === 'DELETE') {
-            setVotes(prev => ({ ...prev, [reqId]: Math.max(0, (prev[reqId] ?? 1) - 1) }))
-            if (payload.old?.user_id === meId) setMyVotes(prev => {
-              const s = new Set(prev); s.delete(reqId); return s
-            })
-          }
-        })
-      chRef.current = ch.subscribe()
-      return () => { if (chRef.current) supabase.removeChannel(chRef.current) }
-    })().catch(e => setErr(String(e)))
+      setLoading(false)
+    })().catch(e => { setErr(String(e)); setLoading(false) })
   }, [])
 
-  async function addSong(e: React.FormEvent) {
-    e.preventDefault(); setErr(null)
-    if (!wid || !title.trim()) return
+  const voteCount = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const v of votes) m.set(v.request_id, (m.get(v.request_id) ?? 0) + 1)
+    return m
+  }, [votes])
+
+  const myVotes = useMemo(() => {
+    const s = new Set<string>()
+    for (const v of votes) if (v.user_id && v.user_id === meId) s.add(v.request_id)
+    return s
+  }, [votes, meId])
+
+  async function addRequest(e: React.FormEvent) {
+    e.preventDefault()
+    setErr(null)
+    if (!weddingId || !title.trim()) return
     const { data, error } = await supabase
       .from('song_requests')
-      .insert({ wedding_id: wid, title: title.trim(), artist: artist.trim() || null, note: note.trim() || null })
-      .select('id,title,artist,note,status,created_at').single()
+      .insert({ wedding_id: weddingId, title: title.trim(), artist: artist.trim() || null })
+      .select('id,title,artist,created_at,user_id,status')
+      .single()
     if (error) { setErr(error.message); return }
-    setList(prev => [data as Req, ...prev])
-    setTitle(''); setArtist(''); setNote('')
+    setReqs(prev => [data as RequestRow, ...prev])
+    setTitle(''); setArtist('')
   }
 
-  async function toggleVote(reqId: number) {
-    if (!meId) return
-    if (myVotes.has(reqId)) {
-      // usuwam swój głos
-      await supabase.from('song_votes').delete().eq('request_id', reqId)
+  async function upvote(id: string) {
+    setErr(null)
+    // zakładamy RLS: user_id = auth.uid() jako DEFAULT, więc podajemy tylko request_id
+    const { error } = await supabase.from('song_votes').insert({ request_id: id })
+    if (error) {
+      // jeśli constraint UNIQUE już jest, to zignoruj
+      if (!/duplicate|unique/i.test(error.message)) setErr(error.message)
     } else {
-      const { error } = await supabase.from('song_votes').insert({ request_id: reqId })
-      if (error) setErr(error.message)
+      setVotes(prev => [...prev, { request_id: id, user_id: meId! }])
     }
   }
 
   const sorted = useMemo(() => {
-    const rank = (s: Req['status']) => (s === 'queued' ? 0 : s === 'played' ? 1 : 2)
-    return [...list].sort((a, b) => {
-      const ra = rank(a.status), rb = rank(b.status)
-      if (ra !== rb) return ra - rb
-      const va = votes[a.id] ?? 0, vb = votes[b.id] ?? 0
-      if (va !== vb) return vb - va
+    const list = [...reqs]
+    list.sort((a, b) => {
+      // pending na górze, reszta niżej
+      const aw = a.status === 'pending' || a.status == null ? 0 : 1
+      const bw = b.status === 'pending' || b.status == null ? 0 : 1
+      if (aw !== bw) return aw - bw
+      const av = voteCount.get(a.id) ?? 0
+      const bv = voteCount.get(b.id) ?? 0
+      if (av !== bv) return bv - av
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     })
-  }, [list, votes])
+    return list
+  }, [reqs, voteCount])
+
+  if (loading) return <p>Ładowanie…</p>
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <h1 className="text-2xl font-bold">Prośby o piosenki</h1>
 
-      <form onSubmit={addSong} className="grid gap-2 md:grid-cols-3">
-        <input className="border rounded p-2" placeholder="Tytuł *" value={title} onChange={e=>setTitle(e.target.value)} />
-        <input className="border rounded p-2" placeholder="Wykonawca" value={artist} onChange={e=>setArtist(e.target.value)} />
-        <input className="border rounded p-2 md:col-span-1" placeholder="Dedykacja/uwagi" value={note} onChange={e=>setNote(e.target.value)} />
-        <button className="btn md:col-span-3 disabled:opacity-50" disabled={!title.trim()}>Zaproponuj</button>
+      <form onSubmit={addRequest} className="grid gap-2 md:grid-cols-3">
+        <input className="border rounded p-2" placeholder="Tytuł" value={title} onChange={e=>setTitle(e.target.value)} />
+        <input className="border rounded p-2" placeholder="Wykonawca (opcjonalnie)" value={artist} onChange={e=>setArtist(e.target.value)} />
+        <button className="btn disabled:opacity-50" disabled={!title.trim()}>Zaproponuj</button>
       </form>
 
       {err && <p className="text-red-600 text-sm">{err}</p>}
 
-      <ul className="divide-y">
-        {sorted.map(r => (
-          <li key={r.id} className="py-3 flex items-start justify-between gap-2">
-            <div>
-              <div className="font-medium">{r.title}{r.artist ? ` — ${r.artist}` : ''}</div>
-              {r.note && <div className="text-sm text-slate-600">{r.note}</div>}
-              <div className="text-xs text-slate-500 mt-1">
-                {r.status === 'queued' ? 'W kolejce' : r.status === 'played' ? 'Zagrane' : 'Odrzucone'}
-                {typeof votes[r.id] === 'number' && ` • głosy: ${votes[r.id]}`}
-              </div>
-            </div>
-            <button
-              className={`px-3 py-1 rounded text-sm border ${myVotes.has(r.id) ? 'bg-brand-100 text-brand-700' : 'bg-white'}`}
-              onClick={()=>toggleVote(r.id)}
-              title={myVotes.has(r.id) ? 'Cofnij głos' : 'Zagłosuj'}
-            >
-              ❤️ {votes[r.id] ?? 0}
-            </button>
-          </li>
-        ))}
-      </ul>
+      {!sorted.length ? (
+        <p className="text-slate-600">Brak próśb – bądź pierwszy/a!</p>
+      ) : (
+        <ul className="divide-y">
+          {sorted.map(r => {
+            const cnt = voteCount.get(r.id) ?? 0
+            const mine = myVotes.has(r.id)
+            const status = r.status ?? 'pending'
+            return (
+              <li key={r.id} className="py-2 flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-medium">{r.title}{r.artist ? ` — ${r.artist}` : ''}</div>
+                  <div className="text-xs text-slate-600">
+                    {status === 'pending' ? 'oczekuje' : status === 'played' ? 'zagrane' : 'odrzucone'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">👍 {cnt}</span>
+                  <button
+                    className="btn disabled:opacity-50"
+                    onClick={() => upvote(r.id)}
+                    disabled={mine || status !== 'pending'}
+                  >
+                    {mine ? 'Zagłosowano' : 'Głosuj'}
+                  </button>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </div>
   )
 }

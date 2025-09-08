@@ -6,12 +6,13 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 
-// Bez zakładki "Goście"
+// ← DODANE: zakładka „Piosenki”
 const baseItems = [
   { href: '/app/info', label: 'Info' },
   { href: '/app/gallery', label: 'Galeria' },
   { href: '/app/videos', label: 'Wideo' },
   { href: '/app/chat', label: 'Czat' },
+  { href: '/app/songs', label: 'Piosenki' },
   { href: '/app/tables', label: 'Stoły/PDF' },
 ]
 
@@ -30,7 +31,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [])
 
   const items = isOrganizer
-    ? [...baseItems, { href: '/app/admin/guests', label: 'Admin' }]
+    // ← DODANE: skrót do /dj tylko dla organizatora (poza /app)
+    ? [...baseItems, { href: '/dj', label: 'DJ box' }]
     : baseItems
 
   return (
