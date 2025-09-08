@@ -57,6 +57,13 @@ export default function Home() {
           <p className="mt-2 muted">Rozmieszczenie gości i eksport do PDF. Plik zapiszesz w chmurze.</p>
           <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/tables">Otwórz rozkład stołów</Link>
         </article>
+        <article className="card card-pad">
+          <h3 className="text-lg font-semibold">Prośby o piosenki</h3>
+          <p className="mt-2 muted">Zapropnuj utwór i głosuj na propozycje innych.</p>
+          <Link className="nav-link nav-link-active mt-4 inline-block no-underline" href="/app/songs">
+            Otwórz „Piosenki”
+          </Link>
+        </article>
       </section>
     </div>
   )
