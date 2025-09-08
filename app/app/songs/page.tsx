@@ -22,6 +22,7 @@ export default function SongsPage() {
   const [mineVotes, setMineVotes] = useState<Set<string>>(new Set())
   const [err, setErr] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [isOrganizer, setIsOrganizer] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -29,6 +30,17 @@ export default function SongsPage() {
       setWid(w)
       await refresh(w)
       await refreshMyVotes()
+
+      // rola (czy organizer)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: me } = await supabase
+          .from('guests')
+          .select('role')
+          .eq('user_id', user.id)
+          .maybeSingle()
+        setIsOrganizer(me?.role === 'organizer')
+      }
     })().catch(e => setErr(String(e)))
   }, [])
 
@@ -66,7 +78,7 @@ export default function SongsPage() {
         wedding_id: wid,
         title: title.trim(),
         artist: artist.trim() || null,
-        status: 'pending', // ← jawnie 'pending'
+        status: 'pending',
       })
       if (error) throw error
       setTitle(''); setArtist('')
@@ -86,6 +98,20 @@ export default function SongsPage() {
       setMineVotes(prev => new Set(prev).add(id))
       await refresh()
     }
+  }
+
+  // ——— USUŃ (organizator) ———
+  async function removeReq(id: string) {
+    if (!isOrganizer) return
+    const res = await fetch('/api/admin/delete-song-request', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json' },
+      body: JSON.stringify({ id })
+    })
+    const j = await res.json().catch(()=>({}))
+    if (!res.ok) { setErr(j.error || 'Nie udało się usunąć'); return }
+    setList(prev => prev.filter(x => x.id !== id))
+    setMineVotes(prev => { const n = new Set(prev); n.delete(id); return n })
   }
 
   const pending = useMemo(() => list.filter(r => r.status === 'pending'), [list])
@@ -120,6 +146,9 @@ export default function SongsPage() {
               <button className="btn disabled:opacity-50" disabled={!canVote(r)} onClick={()=>vote(r.id)}>
                 {mineVotes.has(r.id) ? 'Oddano głos' : 'Głosuj'}
               </button>
+              {isOrganizer && (
+                <button className="btn" onClick={()=>removeReq(r.id)}>Usuń</button>
+              )}
             </div>
           </li>
         ))}
@@ -135,6 +164,11 @@ export default function SongsPage() {
                 <div className="text-xs text-slate-600">
                   {r.artist || ''} • {r.status === 'played' ? 'zagrane' : 'odrzucone'} • 👍 {votesOf(r)}
                 </div>
+                {isOrganizer && (
+                  <div className="mt-2">
+                    <button className="btn" onClick={()=>removeReq(r.id)}>Usuń</button>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

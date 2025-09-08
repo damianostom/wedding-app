@@ -40,7 +40,7 @@ export default function DjBoxPage() {
 
   useEffect(() => { load() }, [])
 
-  // ====== auto-refresh (co 4 s, pauza w tle) ======
+  // ====== auto-refresh (pauza w tle) ======
   useEffect(() => {
     const tick = () => { if (!document.hidden) load(true) }
     const id = setInterval(tick, REFRESH_MS)
@@ -91,6 +91,33 @@ export default function DjBoxPage() {
       setTimeout(() => load(true), 0)
     } catch (e:any) {
       setErr(e?.message || 'Błąd')
+    } finally {
+      setBusyIds(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
+  }
+
+  // ====== USUWANIE (DJ) ======
+  async function removeReq(id: string) {
+    setErr(null)
+    const { item } = pullFromAll(id)  // optymistycznie z list
+    if (!item) return
+    setBusyIds(prev => new Set(prev).add(id))
+
+    try {
+      const res = await fetch('/api/dj/requests/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      })
+      if (!res.ok) {
+        // rollback
+        pushTo(item.status, item)
+        const j = await res.json().catch(()=>({}))
+        throw new Error(j.error || 'Nie udało się usunąć')
+      }
+      setTimeout(() => load(true), 0)
+    } catch (e:any) {
+      setErr(e?.message || 'Błąd usuwania')
     } finally {
       setBusyIds(prev => { const n = new Set(prev); n.delete(id); return n })
     }
@@ -159,6 +186,7 @@ export default function DjBoxPage() {
               <>
                 <Btn onClick={()=>setStatus(r.id,'played')}   disabled={busyIds.has(r.id)}>Zagrane</Btn>
                 <Btn onClick={()=>setStatus(r.id,'rejected')} disabled={busyIds.has(r.id)}>Odrzuć</Btn>
+                <Btn onClick={()=>removeReq(r.id)}            disabled={busyIds.has(r.id)}>Usuń</Btn>
               </>
             }/>
           ))}
@@ -174,6 +202,7 @@ export default function DjBoxPage() {
               <>
                 <Btn onClick={()=>setStatus(r.id,'pending')}  disabled={busyIds.has(r.id)}>Cofnij</Btn>
                 <Btn onClick={()=>setStatus(r.id,'rejected')} disabled={busyIds.has(r.id)}>Odrzuć</Btn>
+                <Btn onClick={()=>removeReq(r.id)}            disabled={busyIds.has(r.id)}>Usuń</Btn>
               </>
             }/>
           ))}
@@ -186,7 +215,10 @@ export default function DjBoxPage() {
         <ul className="divide-y">
           {rejected.map(r => (
             <Line key={r.id} r={r} actions={
-              <Btn onClick={()=>setStatus(r.id,'pending')} disabled={busyIds.has(r.id)}>Przywróć</Btn>
+              <div className="flex gap-2">
+                <Btn onClick={()=>setStatus(r.id,'pending')} disabled={busyIds.has(r.id)}>Przywróć</Btn>
+                <Btn onClick={()=>removeReq(r.id)}          disabled={busyIds.has(r.id)}>Usuń</Btn>
+              </div>
             }/>
           ))}
         </ul>
