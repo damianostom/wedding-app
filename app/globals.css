@@ -58,4 +58,46 @@
   .nav { @apply flex flex-wrap gap-2; }
   .nav-link { @apply rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100; }
   .nav-link-active { @apply bg-slate-900 text-white hover:bg-slate-900; }
+
+  /* ——— dodatki wizualne ——— */
+
+  /* gradient na tytuł hero */
+  .text-gradient{
+    background: linear-gradient(90deg, rgba(var(--brand-700),1), rgba(var(--brand-600),1));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* delikatny „lift” kart */
+  .hover\:lift{
+    transition: transform .25s ease, box-shadow .25s ease;
+  }
+  .hover\:lift:hover{
+    transform: translateY(-2px);
+    box-shadow: 0 14px 30px rgba(163,118,101,0.18), 0 4px 8px rgba(0,0,0,0.04);
+  }
+
+  /* przycisk z gradientem (na hero) */
+  .btn-gradient{
+    background-image: linear-gradient(135deg, rgba(var(--brand-600),1), rgba(var(--brand-700),1));
+  }
+  .btn-gradient:hover{
+    filter: brightness(0.95);
+  }
+
+  /* animacje tła */
+  .float-slow{ animation: floatY 8s ease-in-out infinite; }
+  .float-slow.delay-300{ animation-delay: .3s; }
+  .spin-slow{ animation: spinSlow 18s linear infinite; }
+}
+
+/* Klucze animacji */
+@keyframes floatY {
+  0%, 100% { transform: translateY(0px); }
+  50%      { transform: translateY(-10px); }
+}
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
