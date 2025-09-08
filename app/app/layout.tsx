@@ -1,50 +1,34 @@
-'use client'
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import { supaClient } from '@/lib/supabaseClient'
+// app/layout.tsx
+import './globals.css'
+import type { Metadata, Viewport } from 'next'
+import AuthButtons from '@/components/AuthButtons'
 
-const baseItems = [
-  { href: '/app/info', label: 'Info' },
-  { href: '/app/gallery', label: 'Galeria' },
-  { href: '/app/videos', label: 'Wideo' },     // ← NOWE
-  { href: '/app/chat', label: 'Czat' },
-  { href: '/app/guests', label: 'Goście' },
-  { href: '/app/tables', label: 'Stoły/PDF' },
-]
+export const metadata: Metadata = {
+  title: 'Wedding App',
+  description: 'Aplikacja weselna',
+}
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const path = usePathname()
-  const [isOrganizer, setIsOrganizer] = useState(false)
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+}
 
-  useEffect(() => {
-    ;(async () => {
-      const supabase = supaClient()
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
-      setIsOrganizer(data?.role === 'organizer')
-    })()
-  }, [])
-
-  const items = isOrganizer ? [...baseItems, { href: '/app/admin/guests', label: 'Admin' }] : baseItems
-
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="space-y-5">
-      <nav className="card wedding-card">
-        <div className="card-pad flex flex-wrap gap-2">
-          {items.map(i => (
-            <Link
-              key={i.href}
-              href={i.href}
-              className={`nav-link no-underline ${path.startsWith(i.href) ? 'nav-link-active' : ''}`}
-            >
-              {i.label}
-            </Link>
-          ))}
-        </div>
-      </nav>
-      <div className="card wedding-card"><div className="card-pad prose prose-slate max-w-none">{children}</div></div>
-    </div>
+    <html lang="pl">
+      <body className="min-h-screen wedding-bg">
+        <header className="border-b bg-white/70 backdrop-blur">
+          <div className="container-app flex items-center justify-between py-4">
+            <div className="font-head text-xl font-semibold">Agatka &amp; Damian</div>
+            <AuthButtons />
+          </div>
+        </header>
+
+        <main className="container-app my-6">
+          {children}
+        </main>
+      </body>
+    </html>
   )
 }
