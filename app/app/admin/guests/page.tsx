@@ -13,7 +13,6 @@ export default function AdminGuests() {
 
   const [firstName, setFirst] = useState('')
   const [lastName, setLast] = useState('')
-  const [password, setPass] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [isOrganizer, setIsOrganizer] = useState(false)
@@ -36,12 +35,14 @@ export default function AdminGuests() {
     if (!res.ok) { setErr(j.error || 'Błąd'); return }
     setMsg('Połączono Twoje konto z weselem.'); await refresh()
   }
+
   async function createGuest(e: React.FormEvent) {
     e.preventDefault(); setMsg(null); setErr(null)
-    const res = await fetch('/api/admin/create-guest',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ firstName, lastName, password }) })
+    const res = await fetch('/api/admin/create-guest',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ firstName, lastName }) })
     const j = await res.json().catch(()=>({}))
     if (!res.ok) { setErr(j.error || 'Błąd'); return }
-    setMsg(`Utworzono/ustawiono konto: ${j.username}`); setFirst(''); setLast(''); setPass(''); await refresh()
+    setMsg(`Utworzono/ustawiono konto: ${j.username}`)
+    setFirst(''); setLast(''); await refresh()
   }
 
   async function toggleActive(g: Guest) {
@@ -83,11 +84,10 @@ export default function AdminGuests() {
       ) : (
         <>
           <h2 className="text-lg font-semibold">Konta gości</h2>
-          <form onSubmit={createGuest} className="grid gap-3 md:grid-cols-4">
+          <form onSubmit={createGuest} className="grid gap-3 md:grid-cols-3">
             <input className="border rounded p-2" placeholder="Imię" value={firstName} onChange={(e)=>setFirst(e.target.value)} />
             <input className="border rounded p-2" placeholder="Nazwisko" value={lastName} onChange={(e)=>setLast(e.target.value)} />
-            <input className="border rounded p-2" type="password" placeholder="Hasło" value={password} onChange={(e)=>setPass(e.target.value)} />
-            <button className="btn">Utwórz konto gościa</button>
+            <button className="btn">Dodaj gościa (bez hasła)</button>
           </form>
 
           <ul className="divide-y">

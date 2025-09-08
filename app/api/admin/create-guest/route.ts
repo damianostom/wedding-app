@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
 import { getSupabaseAdmin } from '@/lib/supabaseAdmin'
 import type { User as SupaUser } from '@supabase/supabase-js'
+import crypto from 'crypto'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -17,14 +18,18 @@ function slugify(s: string) {
     .replace(/^-+|-+$/g, '')
 }
 
+function deriveGuestPassword(weddingId: string, username: string): string {
+  const secret = process.env.SERVER_GUEST_SECRET || 'default-secret-change-me'
+  return crypto.createHmac('sha256', secret).update(`${weddingId}:${username}`).digest('hex').slice(0, 32)
+}
+
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { firstName: string; lastName: string; password: string }
+    const body = (await req.json()) as { firstName: string; lastName: string }
     const first = body.firstName?.trim()
     const last = body.lastName?.trim()
-    const password = body.password?.trim()
-    if (!first || !last || !password) {
-      return NextResponse.json({ error: 'Podaj imię, nazwisko i hasło.' }, { status: 400 })
+    if (!first || !last) {
+      return NextResponse.json({ error: 'Podaj imię i nazwisko.' }, { status: 400 })
     }
 
     // Sesja i rola wywołującego (musi być organizer)
@@ -44,6 +49,7 @@ export async function POST(req: Request) {
 
     const username = `${slugify(first)}-${slugify(last)}`
     const email = `${username}@noemail.local`
+    const password = deriveGuestPassword(me.wedding_id, username)
 
     const admin = getSupabaseAdmin()
 
@@ -69,14 +75,31 @@ export async function POST(req: Request) {
       if (upd.error) return NextResponse.json({ error: upd.error.message }, { status: 400 })
     }
 
-    // Rekord w guests
+    // Rekord w guests (unikamy duplikatu po username + wedding_id)
     const full_name = `${first} ${last}`
-    const ins = await admin
+
+    // Czy już istnieje?
+    const { data: exists } = await admin
       .from('guests')
-      .insert({ wedding_id: me.wedding_id, user_id: target!.id, full_name, role: 'guest', username })
       .select('id')
-      .single()
-    if (ins.error) return NextResponse.json({ error: ins.error.message }, { status: 400 })
+      .eq('wedding_id', me.wedding_id)
+      .eq('username', username)
+      .maybeSingle()
+
+    if (exists?.id) {
+      const upd = await admin
+        .from('guests')
+        .update({ user_id: target!.id, full_name, role: 'guest', is_active: true })
+        .eq('id', exists.id)
+      if (upd.error) return NextResponse.json({ error: upd.error.message }, { status: 400 })
+    } else {
+      const ins = await admin
+        .from('guests')
+        .insert({ wedding_id: me.wedding_id, user_id: target!.id, full_name, role: 'guest', username, is_active: true })
+        .select('id')
+        .single()
+      if (ins.error) return NextResponse.json({ error: ins.error.message }, { status: 400 })
+    }
 
     return NextResponse.json({ ok: true, username })
   } catch (e: any) {
