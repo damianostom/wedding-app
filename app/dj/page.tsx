@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 
 type Row = { id: string; title: string; artist: string | null; status: 'pending'|'played'|'rejected'; votes: number }
 
+const REFRESH_MS = 300000
+
 export default function DjBoxPage() {
   const router = useRouter()
   const [pending, setPending] = useState<Row[]>([])
@@ -14,14 +16,21 @@ export default function DjBoxPage() {
   const [loading, setLoading] = useState(true)
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
 
-  async function load() {
+  // ====== ładowanie listy ======
+  async function load(silent = false) {
+    if (!silent) setLoading(true)
     setErr(null)
     try {
       const res = await fetch('/api/dj/list', { cache: 'no-store' })
       if (res.status === 401) { router.replace('/dj/login'); return }
       const j = await res.json()
       if (!res.ok) throw new Error(j.error || 'Błąd pobierania')
-      setPending(j.pending || []); setPlayed(j.played || []); setRejected(j.rejected || [])
+
+      // nie nadpisuj pozycji, które są w trakcie zmiany (busy)
+      const skip = (r: Row) => busyIds.has(r.id)
+      setPending(j.pending.filter((r: Row) => !skip(r)))
+      setPlayed(j.played.filter((r: Row) => !skip(r)))
+      setRejected(j.rejected.filter((r: Row) => !skip(r)))
     } catch (e:any) {
       setErr(e?.message || 'Błąd')
     } finally {
@@ -31,38 +40,40 @@ export default function DjBoxPage() {
 
   useEffect(() => { load() }, [])
 
-  // ====== OPTYMISTYCZNE PRZENOSZENIE ======
+  // ====== auto-refresh (co 4 s, pauza w tle) ======
+  useEffect(() => {
+    const tick = () => { if (!document.hidden) load(true) }
+    const id = setInterval(tick, REFRESH_MS)
+    document.addEventListener('visibilitychange', tick)
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', tick) }
+  }, [])
+
+  // ====== optymistyczne przenoszenie ======
   function pullFromAll(id: string): { item: Row | null } {
     let item: Row | null = null
     const take = (list: Row[], setter: (x: Row[]) => void) => {
       if (item) return
-      if (list.some(r => r.id === id)) {
-        const idx = list.findIndex(r => r.id === id)
-        item = list[idx]
-        setter([...list.slice(0, idx), ...list.slice(idx + 1)])
-      }
+      const i = list.findIndex(r => r.id === id)
+      if (i >= 0) { item = list[i]; setter([...list.slice(0, i), ...list.slice(i + 1)]) }
     }
     take(pending, setPending); take(played, setPlayed); take(rejected, setRejected)
     return { item }
   }
-
-  function pushTo(status: Row['status'], row: Row) {
-    const withStatus = { ...row, status }
-    if (status === 'pending')  setPending(s => sortByVotes([withStatus, ...s]))
-    if (status === 'played')   setPlayed(s => [withStatus, ...s])
-    if (status === 'rejected') setRejected(s => [withStatus, ...s])
-  }
-
   const sortByVotes = (xs: Row[]) => [...xs].sort((a,b) => (b.votes||0) - (a.votes||0))
+  function pushTo(status: Row['status'], row: Row) {
+    const r = { ...row, status }
+    if (status === 'pending')  setPending(s => sortByVotes([r, ...s]))
+    if (status === 'played')   setPlayed(s => [r, ...s])
+    if (status === 'rejected') setRejected(s => [r, ...s])
+  }
 
   async function setStatus(id: string, status: Row['status']) {
     setErr(null)
-    // optimistycznie przenieś
     const { item } = pullFromAll(id)
     if (!item) return
     pushTo(status, item)
-
     setBusyIds(prev => new Set(prev).add(id))
+
     try {
       const res = await fetch('/api/dj/set-status', {
         method: 'POST',
@@ -76,8 +87,8 @@ export default function DjBoxPage() {
         const j = await res.json().catch(()=>({}))
         throw new Error(j.error || 'Błąd zmiany statusu')
       }
-      // na wszelki wypadek lekki „re-sync” w tle (bez odczuwalnego laga)
-      setTimeout(() => load(), 0)
+      // delikatny re-sync w tle
+      setTimeout(() => load(true), 0)
     } catch (e:any) {
       setErr(e?.message || 'Błąd')
     } finally {
@@ -87,20 +98,17 @@ export default function DjBoxPage() {
 
   async function clearPlayed() {
     setErr(null)
-    // optymistycznie przenieś wszystkie „played” do „rejected”
     const moved = played
     setRejected(s => [...moved.map(r => ({ ...r, status: 'rejected' as const })), ...s])
     setPlayed([])
-
     const res = await fetch('/api/dj/clear-played', { method: 'POST' })
     if (!res.ok) {
-      // rollback
       setPlayed(moved)
       setRejected(s => s.slice(moved.length))
       const j = await res.json().catch(()=>({}))
       setErr(j.error || 'Błąd czyszczenia')
     } else {
-      setTimeout(() => load(), 0)
+      setTimeout(() => load(true), 0)
     }
   }
 
@@ -116,7 +124,6 @@ export default function DjBoxPage() {
   const Btn = ({ onClick, disabled, children }: any) => (
     <button className="btn disabled:opacity-50" onClick={onClick} disabled={disabled}>{children}</button>
   )
-
   const Line = ({ r, actions }: { r: Row; actions: React.ReactNode }) => (
     <li className="py-2 flex items-center justify-between gap-2">
       <div>
@@ -135,6 +142,7 @@ export default function DjBoxPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">DJ box – prośby o piosenki</h1>
         <div className="flex gap-2">
+          <Btn onClick={()=>load()}>Odśwież</Btn>
           <Btn onClick={clearPlayed}>Wyczyść zagrane → odrzucone</Btn>
           <Btn onClick={logout}>Wyloguj</Btn>
         </div>
