@@ -6,13 +6,12 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
 
-// ← DODANE: zakładka „Piosenki”
 const baseItems = [
-  { href: '/app/info', label: 'Info' },
-  { href: '/app/gallery', label: 'Galeria' },
+  { href: '/app/info',   label: 'Info' },
+  { href: '/app/gallery',label: 'Galeria' },
   { href: '/app/videos', label: 'Wideo' },
-  { href: '/app/chat', label: 'Czat' },
-  { href: '/app/songs', label: 'Piosenki' },
+  { href: '/app/chat',   label: 'Czat' },
+  { href: '/app/songs',  label: 'Piosenki' },
   { href: '/app/tables', label: 'Stoły/PDF' },
 ]
 
@@ -25,14 +24,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       const supabase = supaClient()
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
-      const { data } = await supabase.from('guests').select('role').eq('user_id', user.id).maybeSingle()
+      const { data } = await supabase
+        .from('guests')
+        .select('role')
+        .eq('user_id', user.id)
+        .maybeSingle()
       setIsOrganizer(data?.role === 'organizer')
     })()
   }, [])
 
   const items = isOrganizer
-    // ← DODANE: skrót do /dj tylko dla organizatora (poza /app)
-    ? [...baseItems, { href: '/dj', label: 'DJ box' }]
+    ? [
+        ...baseItems,
+        { href: '/app/admin/guests', label: 'Admin' }, // ← NOWE
+        { href: '/dj', label: 'DJ box' },
+      ]
     : baseItems
 
   return (
