@@ -180,3 +180,42 @@
   animation: shine-move 6s linear infinite;
 }
 @keyframes shine-move { to { transform: translate(400%,0) rotate(25deg); } }
+/* ───────── Fancy efekty dla Info ───────── */
+
+/* delikatny połysk na tytułach */
+@keyframes shimmer-move {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+.shimmer { position: relative; overflow: hidden; }
+.shimmer::after{
+  content:"";
+  position:absolute; inset:0;
+  background: linear-gradient(120deg, transparent 0%, rgba(255,255,255,.6) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: shimmer-move 2.8s ease-in-out infinite;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+/* złota cieniutka linia pod nagłówkiem */
+.gold-hr { height: 2px; width: 100%; background:
+  linear-gradient(90deg, rgba(199,146,125,.0), rgba(199,146,125,.7), rgba(199,146,125,.0));
+  border-radius: 999px;
+}
+
+/* gradientowa typografia nagłówka */
+.gradient-title {
+  background: linear-gradient(90deg, rgb(var(--brand-700)), rgb(var(--brand-600)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* hover „uniesienie” */
+.lift { transition: transform .25s ease, box-shadow .25s ease; }
+.lift:hover { transform: translateY(-2px); box-shadow: 0 14px 30px rgba(163,118,101,.12); }
+
+/* reveal-up na scrollu */
+.reveal-up { opacity: 0; transform: translateY(12px); transition: opacity .6s ease, transform .6s ease; }
+.reveal-up.visible { opacity: 1; transform: none; }
