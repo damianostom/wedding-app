@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supaClient } from '@/lib/supabaseClient'
+import './globals.css'
 
 // usunięto: { href: '/app/guests', label: 'Goście' }
 const baseItems = [
