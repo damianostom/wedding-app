@@ -6,6 +6,8 @@ export const dynamic = 'force-dynamic'
 
 export async function POST() {
   const res = NextResponse.json({ ok: true })
-  res.cookies.set('dj_wid', '', { path: '/dj', maxAge: 0 })
+  // usuwamy starą i nową nazwę na wszelki wypadek
+  res.cookies.set('dj_wedding', '', { path: '/', maxAge: 0 })
+  res.cookies.set('dj_wid', '', { path: '/', maxAge: 0 })
   return res
 }

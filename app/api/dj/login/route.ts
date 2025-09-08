@@ -26,12 +26,12 @@ export async function POST(req: Request) {
 
     const res = NextResponse.json({ ok: true, weddingId: data.wedding_id })
 
-    // ✅ Cookie działa lokalnie (secure tylko w produkcji)
-    res.cookies.set('dj_wid', data.wedding_id, {
+    // ⬇️ najważniejsze: nazwa i ścieżka ciasteczka zgodne z API
+    res.cookies.set('dj_wedding', data.wedding_id, {
       httpOnly: true,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
-      path: '/dj',
+      path: '/',                 // widoczne również dla /api/dj/**
       maxAge: 60 * 60 * 24 * 14, // 14 dni
     })
 
