@@ -24,15 +24,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Niepoprawny token' }, { status: 401 })
     }
 
-    // Zapisz sesję DJ-a w httpOnly cookie (tylko pod /dj)
     const res = NextResponse.json({ ok: true, weddingId: data.wedding_id })
+
+    // ✅ Cookie działa lokalnie (secure tylko w produkcji)
     res.cookies.set('dj_wid', data.wedding_id, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: true,
+      secure: process.env.NODE_ENV === 'production',
       path: '/dj',
       maxAge: 60 * 60 * 24 * 14, // 14 dni
     })
+
     return res
   } catch (e: any) {
     return NextResponse.json(
